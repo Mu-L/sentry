@@ -1,10 +1,9 @@
 from django.http import Http404
 
 from sentry.api.base import EnvironmentMixin
-from sentry.models import Environment
-
 from sentry.data_export.base import ExportError
 from sentry.data_export.processors.issues_by_tag import IssuesByTagProcessor
+from sentry.models import Environment
 from sentry.web.frontend.base import ProjectView
 from sentry.web.frontend.mixins.csv import CsvMixin
 
@@ -35,6 +34,6 @@ class GroupTagExportView(ProjectView, CsvMixin, EnvironmentMixin):
         except ExportError:
             raise Http404
 
-        filename = "{}-{}".format(processor.group.qualified_short_id or processor.group.id, key)
+        filename = f"{processor.group.qualified_short_id or processor.group.id}-{key}"
 
         return self.to_csv_response(processor.get_raw_data(), filename, key=key)

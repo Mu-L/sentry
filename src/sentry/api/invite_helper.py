@@ -1,17 +1,22 @@
-from urllib.parse import urlencode, parse_qsl
-from django.utils.crypto import constant_time_compare
-from django.core.urlresolvers import reverse
+from typing import Dict
+from urllib.parse import parse_qsl, urlencode
 
-from sentry.utils import metrics
-from sentry.utils.audit import create_audit_entry
+from django.urls import reverse
+from django.utils.crypto import constant_time_compare
+
+from sentry import features
 from sentry.models import (
     AuditLogEntryEvent,
     Authenticator,
     AuthIdentity,
     AuthProvider,
     OrganizationMember,
+    User,
+    UserEmail,
 )
 from sentry.signals import member_joined
+from sentry.utils import metrics
+from sentry.utils.audit import create_audit_entry
 
 INVITE_COOKIE = "pending-invite"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
@@ -145,13 +150,7 @@ class ApiInviteHelper:
 
     @property
     def user_authenticated(self):
-        return self.request.user.is_authenticated()
-
-    @property
-    def needs_2fa(self):
-        org_requires_2fa = self.om.organization.flags.require_2fa.is_set
-        user_has_2fa = Authenticator.objects.user_has_2fa(self.request.user.id)
-        return org_requires_2fa and not user_has_2fa
+        return self.request.user.is_authenticated
 
     @property
     def member_already_exists(self):
@@ -169,7 +168,7 @@ class ApiInviteHelper:
             and self.invite_approved
             and self.valid_token
             and self.user_authenticated
-            and not self.needs_2fa
+            and not any(self.get_onboarding_steps().values())
         )
 
     def accept_invite(self, user=None):
@@ -210,3 +209,28 @@ class ApiInviteHelper:
 
         self.handle_success()
         metrics.incr("organization.invite-accepted", sample_rate=1.0)
+
+    def _needs_2fa(self) -> bool:
+        org_requires_2fa = self.om.organization.flags.require_2fa.is_set
+        user_has_2fa = Authenticator.objects.user_has_2fa(self.request.user.id)
+        return org_requires_2fa and not user_has_2fa
+
+    def _needs_email_verification(self) -> bool:
+        organization = self.om.organization
+        if not (
+            features.has("organizations:required-email-verification", organization)
+            and organization.flags.require_email_verification
+        ):
+            return False
+
+        user = self.request.user
+        primary_email_is_verified = (
+            isinstance(user, User) and UserEmail.get_primary_email(user).is_verified
+        )
+        return not primary_email_is_verified
+
+    def get_onboarding_steps(self) -> Dict[str, bool]:
+        return {
+            "needs2fa": self._needs_2fa(),
+            "needsEmailVerification": self._needs_email_verification(),
+        }

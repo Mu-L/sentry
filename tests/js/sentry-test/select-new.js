@@ -37,12 +37,17 @@ export function selectByLabel(wrapper, label, options = {}) {
   findOption(wrapper, {label}, options).at(0).simulate('click');
 }
 
+export function getOptionByLabel(wrapper, label, options = {}) {
+  openMenu(wrapper, options);
+  return findOption(wrapper, {label}, options).at(0);
+}
+
 export function selectByValue(wrapper, value, options = {}) {
   openMenu(wrapper, options);
   findOption(wrapper, {value}, options).at(0).simulate('click');
 }
 
-//used for the text input to replicate a user typing
+// used for the text input to replicate a user typing
 export function changeInputValue(element, value) {
   element.instance().value = value;
   element.simulate('change', {target: {value}});

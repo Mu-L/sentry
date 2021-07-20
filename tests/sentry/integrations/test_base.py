@@ -1,5 +1,5 @@
-from sentry.models import Integration, Identity, IdentityProvider
 from sentry.integrations import IntegrationInstallation
+from sentry.models import Identity, IdentityProvider, Integration
 from sentry.testutils import TestCase
 
 
@@ -41,8 +41,8 @@ class IntegrationTestCase(TestCase):
         assert self.model.date_added
         assert self.model.date_updated
 
-        inital_value = self.model.date_updated
+        initial_value = self.model.date_updated
         self.model.name = "cooler_name"
         self.model.save()
 
-        assert inital_value < Integration.objects.get(id=self.model.id).date_updated
+        assert initial_value < Integration.objects.get(id=self.model.id).date_updated

@@ -1,16 +1,17 @@
 import tempfile
 from datetime import timedelta
+
 from django.core import mail
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.utils import timezone
 
-from sentry.data_export.base import ExportQueryType, ExportStatus, DEFAULT_EXPIRATION
+from sentry.data_export.base import DEFAULT_EXPIRATION, ExportQueryType, ExportStatus
 from sentry.data_export.models import ExportedData
 from sentry.models import File
 from sentry.testutils import TestCase
 from sentry.utils import json
-from sentry.utils.http import absolute_uri
 from sentry.utils.compat.mock import patch
+from sentry.utils.http import absolute_uri
 
 
 class ExportedDataTest(TestCase):
@@ -57,18 +58,19 @@ class ExportedDataTest(TestCase):
 
     def test_delete_file(self):
         # Empty call should have no effect
-        assert self.data_export.file is None
+        assert self.data_export.file_id is None
         self.data_export.delete_file()
-        assert self.data_export.file is None
+        assert self.data_export.file_id is None
         # Real call should delete the file
         assert File.objects.filter(id=self.file1.id).exists()
-        self.data_export.update(file=self.file1)
-        assert isinstance(self.data_export.file, File)
+        self.data_export.update(file_id=self.file1.id)
+        assert isinstance(self.data_export._get_file(), File)
         self.data_export.delete_file()
+        assert self.data_export._get_file() is None
         assert not File.objects.filter(id=self.file1.id).exists()
         # The ExportedData should be unaffected
         assert ExportedData.objects.filter(id=self.data_export.id).exists()
-        assert ExportedData.objects.get(id=self.data_export.id).file is None
+        assert ExportedData.objects.get(id=self.data_export.id)._get_file() is None
 
     def test_delete(self):
         self.data_export.finalize_upload(file=self.file1)
@@ -85,7 +87,7 @@ class ExportedDataTest(TestCase):
             tf.seek(0)
             self.file1.putfile(tf)
         self.data_export.finalize_upload(file=self.file1)
-        assert self.data_export.file.getfile().read() == self.TEST_STRING
+        assert self.data_export._get_file().getfile().read() == self.TEST_STRING
         assert self.data_export.date_finished is not None
         assert self.data_export.date_expired is not None
         assert self.data_export.date_expired == self.data_export.date_finished + DEFAULT_EXPIRATION
@@ -95,7 +97,7 @@ class ExportedDataTest(TestCase):
             tf.seek(0)
             self.file2.putfile(tf)
         self.data_export.finalize_upload(file=self.file2, expiration=timedelta(weeks=2))
-        assert self.data_export.file.getfile().read() == self.TEST_STRING + self.TEST_STRING
+        assert self.data_export._get_file().getfile().read() == self.TEST_STRING + self.TEST_STRING
         # Ensure the first file is deleted
         assert not File.objects.filter(id=self.file1.id).exists()
         assert self.data_export.date_expired == self.data_export.date_finished + timedelta(weeks=2)

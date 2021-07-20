@@ -1,9 +1,9 @@
 from django.test import RequestFactory
 from exam import fixture
 
-from sentry.testutils import TestCase
 from sentry.middleware.auth import AuthenticationMiddleware
 from sentry.models import UserIP
+from sentry.testutils import TestCase
 from sentry.utils.auth import login
 
 
@@ -18,13 +18,13 @@ class AuthenticationMiddlewareTestCase(TestCase):
 
     def test_process_request_anon(self):
         self.middleware.process_request(self.request)
-        assert self.request.user.is_anonymous()
+        assert self.request.user.is_anonymous
 
     def test_process_request_user(self):
         request = self.request
         assert login(request, self.user)
         self.middleware.process_request(request)
-        assert request.user.is_authenticated()
+        assert request.user.is_authenticated
         assert request.user == self.user
         assert "_nonce" not in request.session
         assert UserIP.objects.filter(user=self.user, ip_address="127.0.0.1").exists()
@@ -36,7 +36,7 @@ class AuthenticationMiddlewareTestCase(TestCase):
         user.save()
         assert login(request, user)
         self.middleware.process_request(request)
-        assert request.user.is_authenticated()
+        assert request.user.is_authenticated
         assert request.user == self.user
         assert request.session["_nonce"] == "xxx"
 
@@ -48,7 +48,7 @@ class AuthenticationMiddlewareTestCase(TestCase):
         assert login(request, user)
         del request.session["_nonce"]
         self.middleware.process_request(request)
-        assert request.user.is_anonymous()
+        assert request.user.is_anonymous
 
     def test_process_request_bad_nonce(self):
         request = self.request
@@ -58,4 +58,4 @@ class AuthenticationMiddlewareTestCase(TestCase):
         assert login(request, user)
         request.session["_nonce"] = "gtfo"
         self.middleware.process_request(request)
-        assert request.user.is_anonymous()
+        assert request.user.is_anonymous

@@ -1,20 +1,21 @@
-import click
 import logging
 import os
 import sys
 
+import click
 from django.conf import settings
 
 from sentry.utils import metrics, warnings
+from sentry.utils.compat import map
 from sentry.utils.sdk import configure_sdk
 from sentry.utils.warnings import DeprecatedSettingWarning
-from sentry.utils.compat import map
 
 logger = logging.getLogger("sentry.runner.initializer")
 
 
 def register_plugins(settings, raise_on_plugin_load_failure=False):
     from pkg_resources import iter_entry_points
+
     from sentry.plugins.base import plugins
 
     # entry_points={
@@ -153,9 +154,10 @@ def bootstrap_options(settings, config=None):
     options = {}
     if config is not None:
         # Attempt to load our config yaml file
-        from sentry.utils.yaml import safe_load
         from yaml.parser import ParserError
         from yaml.scanner import ScannerError
+
+        from sentry.utils.yaml import safe_load
 
         try:
             with open(config, "rb") as fp:
@@ -210,9 +212,11 @@ def configure_structlog():
     """
     Make structlog comply with all of our options.
     """
-    from django.conf import settings
     import logging.config
+
     import structlog
+    from django.conf import settings
+
     from sentry import options
     from sentry.logging import LoggingFormat
 
@@ -225,8 +229,6 @@ def configure_structlog():
             structlog.stdlib.add_log_level,
             structlog.stdlib.PositionalArgumentsFormatter(),
             structlog.processors.format_exc_info,
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.UnicodeDecoder(),
         ],
     }
 
@@ -342,6 +344,8 @@ def initialize_app(config, skip_service_validation=False):
     if getattr(settings, "SENTRY_DEBUGGER", None) is None:
         settings.SENTRY_DEBUGGER = settings.DEBUG
 
+    monkeypatch_drf_listfield_serializer_errors()
+
     monkeypatch_model_unpickle()
 
     import django
@@ -367,6 +371,7 @@ def initialize_app(config, skip_service_validation=False):
     setup_services(validate=not skip_service_validation)
 
     from django.utils import timezone
+
     from sentry.app import env
     from sentry.runner.settings import get_sentry_conf
 
@@ -387,8 +392,9 @@ def setup_services(validate=True):
         tagstore,
         tsdb,
     )
-    from .importer import ConfigurationError
     from sentry.utils.settings import reraise_as
+
+    from .importer import ConfigurationError
 
     service_list = (
         analytics,
@@ -461,7 +467,43 @@ def monkeypatch_model_unpickle():
 def monkeypatch_django_migrations():
     # This monkeypatches django's migration executor with our own, which
     # adds some small but important customizations.
-    import sentry.new_migrations.monkey  # NOQA
+    from sentry.new_migrations.monkey import monkey_migrations
+
+    monkey_migrations()
+
+
+def monkeypatch_drf_listfield_serializer_errors():
+    # This patches reverts https://github.com/encode/django-rest-framework/pull/5655,
+    # effectively we don't get that slight improvement
+    # in serializer error structure introduced in drf 3.8.x,
+    # This is simply the fastest way forward, otherwise
+    # frontend and sentry-cli needs updating and people using
+    # myriad other custom api clients may complain if we break
+    # their error handling.
+    # We're mainly focused on getting to Python 3.8, so this just isn't worth it.
+
+    from collections import Mapping
+
+    from rest_framework.fields import ListField
+    from rest_framework.utils import html
+
+    def to_internal_value(self, data):
+        if html.is_html_input(data):
+            data = html.parse_html_list(data, default=[])
+        if isinstance(data, (str, Mapping)) or not hasattr(data, "__iter__"):
+            self.fail("not_a_list", input_type=type(data).__name__)
+        if not self.allow_empty and len(data) == 0:
+            self.fail("empty")
+        # Begin code retained from < drf 3.8.x.
+        return [self.child.run_validation(item) for item in data]
+        # End code retained from < drf 3.8.x.
+
+    ListField.to_internal_value = to_internal_value
+
+    # We don't need to patch DictField since we don't use it
+    # at the time of patching. This is fine since anything newly
+    # introduced that does use it should prefer the better serializer
+    # errors.
 
 
 def bind_cache_to_option_store():
@@ -473,6 +515,7 @@ def bind_cache_to_option_store():
     # loaded at this point, so we can plug in the cache backend before
     # continuing to initialize the remainder of the application.
     from django.core.cache import cache as default_cache
+
     from sentry.options import default_store
 
     default_store.cache = default_cache

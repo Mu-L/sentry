@@ -4,10 +4,10 @@ from sentry.api.authentication import DSNAuthentication
 from sentry.api.base import EnvironmentMixin
 from sentry.api.bases.project import ProjectEndpoint
 from sentry.api.helpers.user_reports import user_reports_filter_to_unresolved
-from sentry.api.serializers import serialize, UserReportWithGroupSerializer
 from sentry.api.paginator import DateTimePaginator
+from sentry.api.serializers import UserReportWithGroupSerializer, serialize
+from sentry.ingest.userreport import Conflict, save_userreport
 from sentry.models import Environment, ProjectKey, UserReport
-from sentry.ingest.userreport import save_userreport, Conflict
 
 
 class UserReportSerializer(serializers.ModelSerializer):
@@ -30,7 +30,7 @@ class ProjectUserReportsEndpoint(ProjectEndpoint, EnvironmentMixin):
         :pparam string project_slug: the slug of the project.
         :auth: required
         """
-        # we dont allow read permission with DSNs
+        # we don't allow read permission with DSNs
         if isinstance(request.auth, ProjectKey):
             return self.respond(status=401)
 

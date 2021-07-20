@@ -1,8 +1,8 @@
 import unittest
+from datetime import datetime
 
 import pytz
-from datetime import datetime
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.api.endpoints.project_release_details import ReleaseSerializer
 from sentry.constants import MAX_VERSION_LENGTH
@@ -168,7 +168,7 @@ class ReleaseDeleteTest(APITestCase):
         release.add_project(project2)
         ReleaseFile.objects.create(
             organization_id=project.organization_id,
-            release=release,
+            release_id=release.id,
             file=File.objects.create(name="application.js", type="release.file"),
             name="http://example.com/application.js",
         )

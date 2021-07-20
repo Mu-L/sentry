@@ -1,15 +1,16 @@
-import dateutil.parser
 import hashlib
 import hmac
 import logging
 
+import dateutil.parser
 from django.db import IntegrityError, transaction
 from django.http import HttpResponse
+from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
-from django.utils import timezone
+
 from sentry import options
 from sentry.constants import ObjectStatus
 from sentry.models import (
@@ -21,9 +22,9 @@ from sentry.models import (
     PullRequest,
     Repository,
 )
+from sentry.shared_integrations.exceptions import ApiError
 from sentry.utils import json
 
-from sentry.shared_integrations.exceptions import ApiError
 from .repository import GitHubRepositoryProvider
 
 logger = logging.getLogger("sentry.webhooks")
@@ -179,7 +180,7 @@ class PushEventWebhook(Webhook):
 
             author_email = commit["author"]["email"]
             if "@" not in author_email:
-                author_email = "{}@localhost".format(author_email[:65])
+                author_email = f"{author_email[:65]}@localhost"
             # try to figure out who anonymous emails are
             elif self.is_anonymous_email(author_email):
                 gh_username = commit["author"].get("username")

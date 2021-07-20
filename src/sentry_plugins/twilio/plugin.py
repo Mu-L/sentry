@@ -1,18 +1,16 @@
 import re
-import phonenumbers
 
+import phonenumbers
 from django import forms
 from django.utils.translation import ugettext_lazy as _
 
-from sentry.plugins.bases.notify import NotificationPlugin
+import sentry
 from sentry.integrations import FeatureDescription, IntegrationFeatures
-
-from .client import TwilioApiClient
+from sentry.plugins.bases.notify import NotificationPlugin
+from sentry.utils.compat import filter, map
 from sentry_plugins.base import CorePluginMixin
 
-import sentry
-from sentry.utils.compat import map
-from sentry.utils.compat import filter
+from .client import TwilioApiClient
 
 DEFAULT_REGION = "US"
 MAX_SMS_LENGTH = 160
@@ -83,9 +81,7 @@ class TwilioConfigurationForm(forms.Form):
         data = self.cleaned_data["sms_to"]
         phones = split_sms_to(data)
         if len(phones) > 10:
-            raise forms.ValidationError(
-                "Max of 10 phone numbers, {} were given.".format(len(phones))
-            )
+            raise forms.ValidationError(f"Max of 10 phone numbers, {len(phones)} were given.")
         for phone in phones:
             if not validate_phone(phone):
                 raise forms.ValidationError(f"{phone} is not a valid phone number.")

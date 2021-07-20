@@ -1,12 +1,12 @@
 import logging
-
 from collections import namedtuple
-from time import time
 from random import random
+from time import time
 
-from django.db.utils import ProgrammingError, OperationalError
+from django.db.utils import OperationalError, ProgrammingError
 from django.utils import timezone
 from django.utils.functional import cached_property
+
 from sentry.utils.hashlib import md5_text
 
 Key = namedtuple("Key", ("name", "default", "type", "flags", "ttl", "grace", "cache_key"))
@@ -85,7 +85,7 @@ class OptionsStore:
             value = self.cache.get(cache_key)
         except Exception:
             if not silent:
-                logger.warn(CACHE_FETCH_ERR, key.name, extra={"key": key.name}, exc_info=True)
+                logger.warning(CACHE_FETCH_ERR, key.name, extra={"key": key.name}, exc_info=True)
             value = None
 
         if value is not None and key.ttl > 0:
@@ -167,7 +167,9 @@ class OptionsStore:
                 self.set_cache(key, value)
             except Exception:
                 if not silent:
-                    logger.warn(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
+                    logger.warning(
+                        CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True
+                    )
         return value
 
     def set(self, key, value):
@@ -202,7 +204,7 @@ class OptionsStore:
             self.cache.set(cache_key, value, self.ttl)
             return True
         except Exception:
-            logger.warn(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
+            logger.warning(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
             return False
 
     def delete(self, key):
@@ -231,7 +233,7 @@ class OptionsStore:
             self.cache.delete(cache_key)
             return True
         except Exception:
-            logger.warn(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
+            logger.warning(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
             return False
 
     def clean_local_cache(self):

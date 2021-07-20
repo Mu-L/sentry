@@ -1,14 +1,10 @@
 import logging
 
 from celery.task import current
-from django.core.urlresolvers import reverse
-from requests.exceptions import (
-    ConnectionError,
-    RequestException,
-    Timeout,
-)
+from django.urls import reverse
+from requests.exceptions import ConnectionError, RequestException, Timeout
 
-from sentry.api.serializers import serialize, AppPlatformEvent
+from sentry.api.serializers import AppPlatformEvent, serialize
 from sentry.constants import SentryAppInstallationStatus
 from sentry.eventstore.models import Event
 from sentry.http import safe_urlopen
@@ -34,7 +30,6 @@ from sentry.utils import metrics
 from sentry.utils.compat import filter
 from sentry.utils.http import absolute_uri
 from sentry.utils.sentryappwebhookrequests import SentryAppWebhookRequestsBuffer
-
 
 logger = logging.getLogger("sentry.tasks.sentry_apps")
 
@@ -189,12 +184,11 @@ def _process_resource_change(action, sender, instance_id, retryer=None, *args, *
         data = {}
         if isinstance(instance, Event):
             data[name] = _webhook_event_data(instance, instance.group_id, instance.project_id)
-            send_webhooks(installation, event, data=data)
         else:
             data[name] = serialize(instance)
-            send_webhooks(installation, event, data=data)
 
-        metrics.incr("resource_change.processed", sample_rate=1.0, tags={"change_event": event})
+        # Trigger a new task for each webhook
+        send_resource_change_webhook.delay(installation_id=installation.id, event=event, data=data)
 
 
 @instrumented_task("sentry.tasks.process_resource_change_bound", bind=True, **TASK_OPTIONS)
@@ -255,6 +249,25 @@ def workflow_notification(installation_id, issue_id, type, user_id, *args, **kwa
     data.update({"issue": serialize(issue)})
 
     send_webhooks(installation=install, event=f"issue.{type}", data=data, actor=user)
+
+
+@instrumented_task("sentry.tasks.send_process_resource_change_webhook", **TASK_OPTIONS)
+@retry(**RETRY_OPTIONS)
+def send_resource_change_webhook(installation_id, event, data, *args, **kwargs):
+    try:
+        installation = SentryAppInstallation.objects.get(
+            id=installation_id, status=SentryAppInstallationStatus.INSTALLED
+        )
+    except SentryAppInstallation.DoesNotExist:
+        logger.info(
+            "send_process_resource_change_webhook.missing_installation",
+            extra={"installation_id": installation_id, "event": event},
+        )
+        return
+
+    send_webhooks(installation, event, data=data)
+
+    metrics.incr("resource_change.processed", sample_rate=1.0, tags={"change_event": event})
 
 
 def notify_sentry_app(event, futures):

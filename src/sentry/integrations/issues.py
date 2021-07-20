@@ -2,12 +2,12 @@ import logging
 from collections import defaultdict
 
 from sentry import features
+from sentry.models import Activity, ExternalIssue, Group, GroupLink, GroupStatus, Organization
 from sentry.models.useroption import UserOption
 from sentry.shared_integrations.exceptions import ApiError, IntegrationError
-from sentry.models import Activity, ExternalIssue, Group, GroupLink, GroupStatus, Organization
+from sentry.utils.compat import filter
 from sentry.utils.http import absolute_uri
 from sentry.utils.safe import safe_execute
-from sentry.utils.compat import filter
 
 logger = logging.getLogger("sentry.integrations.issues")
 
@@ -52,7 +52,7 @@ class IssueBasicMixin:
         These fields are used to render a form for the user,
         and are then passed in the format of:
 
-        >>>{'title': 'TypeError: Object [object Object] has no method "updateFrom"''}
+        >>>{'title': 'TypeError: Object [object Object] has no method "updateFrom"'}
 
         to `create_issue`, which handles creation of the issue
         in Jira, VSTS, GitHub, etc
@@ -218,7 +218,7 @@ class IssueBasicMixin:
         try:
             repos = self.get_repositories()
         except ApiError:
-            raise IntegrationError("Unable to retrive repositories. Please try again later.")
+            raise IntegrationError("Unable to retrieve repositories. Please try again later.")
         else:
             repo_choices = [(repo["identifier"], repo["name"]) for repo in repos]
 

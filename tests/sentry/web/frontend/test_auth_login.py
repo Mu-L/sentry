@@ -1,15 +1,15 @@
 import pytest
-from sentry.utils.compat import mock
-
-from django.test import override_settings
 from django.conf import settings
-from django.core.urlresolvers import reverse
+from django.test import override_settings
+from django.urls import reverse
 from django.utils.http import urlquote
 from exam import fixture
 
-from sentry import options, newsletter
-from sentry.testutils import TestCase
+from sentry import newsletter, options
+from sentry.auth.authenticators import RecoveryCodeInterface, TotpInterface
 from sentry.models import OrganizationMember, User
+from sentry.testutils import TestCase
+from sentry.utils.compat import mock
 
 
 # TODO(dcramer): need tests for SSO behavior and single org behavior
@@ -57,6 +57,22 @@ class AuthLoginTest(TestCase):
         resp = self.client.post(
             self.path, {"username": self.user.username, "password": "admin", "op": "login"}
         )
+        assert resp.url == "/auth/login/"
+        assert resp.status_code == 302
+
+    def test_login_valid_credentials_2fa_redirect(self):
+        user = self.create_user("bar@example.com")
+        RecoveryCodeInterface().enroll(user)
+        TotpInterface().enroll(user)
+        self.create_member(organization=self.organization, user=user)
+
+        self.client.get(self.path)
+
+        resp = self.client.post(
+            self.path,
+            {"username": user.username, "password": "admin", "op": "login"},
+        )
+        assert resp.url == "/auth/2fa/"
         assert resp.status_code == 302
 
     def test_registration_disabled(self):
@@ -237,8 +253,9 @@ class AuthLoginTest(TestCase):
         assert resp.status_code == 200
 
 
-@pytest.mark.skipIf(
-    lambda x: settings.SENTRY_NEWSLETTER != "sentry.newsletter.dummy.DummyNewsletter"
+@pytest.mark.skipif(
+    settings.SENTRY_NEWSLETTER != "sentry.newsletter.dummy.DummyNewsletter",
+    reason="Requires DummyNewsletter.",
 )
 class AuthLoginNewsletterTest(TestCase):
     @fixture

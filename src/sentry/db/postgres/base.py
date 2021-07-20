@@ -4,15 +4,15 @@ import psycopg2 as Database
 # and should be available as part of the backend ``base.py`` namespace.
 from django.db.backends.postgresql_psycopg2.base import DatabaseWrapper
 
+from sentry.utils.strings import strip_lone_surrogates
+
 from .decorators import (
-    capture_transaction_exceptions,
-    auto_reconnect_cursor,
     auto_reconnect_connection,
+    auto_reconnect_cursor,
+    capture_transaction_exceptions,
     less_shitty_error_messages,
 )
 from .operations import DatabaseOperations
-
-from sentry.utils.strings import strip_lone_surrogates
 
 __all__ = ("DatabaseWrapper",)
 
@@ -106,7 +106,7 @@ class DatabaseWrapper(DatabaseWrapper):
 
     def close(self, reconnect=False):
         """
-        This ensures we dont error if the connection has already been closed.
+        This ensures we don't error if the connection has already been closed.
         """
         if self.connection is not None:
             if not self.connection.closed:

@@ -1,10 +1,11 @@
-from sentry.utils.compat import mock
 import os
 from hashlib import md5
 
 from django.conf import settings
 from sentry_sdk import Hub
 
+from sentry.utils.compat import mock
+from sentry.utils.warnings import UnsupportedBackend
 
 TEST_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir, os.pardir, "tests")
@@ -12,6 +13,15 @@ TEST_ROOT = os.path.normpath(
 
 
 def pytest_configure(config):
+    import warnings
+
+    # This is just to filter out an obvious warning before the pytest session starts.
+    warnings.filterwarnings(
+        action="ignore",
+        message=r".*sentry.digests.backends.dummy.DummyBackend.*",
+        category=UnsupportedBackend,
+    )
+
     # HACK: Only needed for testing!
     os.environ.setdefault("_SENTRY_SKIP_CONFIGURATION", "1")
 
@@ -49,6 +59,8 @@ def pytest_configure(config):
 
     # override a few things with our test specifics
     settings.INSTALLED_APPS = tuple(settings.INSTALLED_APPS) + ("tests",)
+    if "sentry" in settings.INSTALLED_APPS:
+        settings.INSTALLED_APPS = settings.INSTALLED_APPS + ("sentry.demo",)
     # Need a predictable key for tests that involve checking signatures
     settings.SENTRY_PUBLIC = False
 
@@ -63,10 +75,10 @@ def pytest_configure(config):
 
     # Replace real sudo middleware with our mock sudo middleware
     # to assert that the user is always in sudo mode
-    middleware = list(settings.MIDDLEWARE_CLASSES)
+    middleware = list(settings.MIDDLEWARE)
     sudo = middleware.index("sentry.middleware.sudo.SudoMiddleware")
     middleware[sudo] = "sentry.testutils.middleware.SudoMiddleware"
-    settings.MIDDLEWARE_CLASSES = tuple(middleware)
+    settings.MIDDLEWARE = tuple(middleware)
 
     settings.SENTRY_OPTIONS["cloudflare.secret-key"] = "cloudflare-secret-key"
 
@@ -78,9 +90,8 @@ def pytest_configure(config):
     settings.SENTRY_TSDB = "sentry.tsdb.inmemory.InMemoryTSDB"
     settings.SENTRY_TSDB_OPTIONS = {}
 
-    if settings.SENTRY_NEWSLETTER == "sentry.newsletter.base.Newsletter":
-        settings.SENTRY_NEWSLETTER = "sentry.newsletter.dummy.DummyNewsletter"
-        settings.SENTRY_NEWSLETTER_OPTIONS = {}
+    settings.SENTRY_NEWSLETTER = "sentry.newsletter.dummy.DummyNewsletter"
+    settings.SENTRY_NEWSLETTER_OPTIONS = {}
 
     settings.BROKER_BACKEND = "memory"
     settings.BROKER_URL = "memory://"
@@ -88,6 +99,7 @@ def pytest_configure(config):
     settings.CELERY_EAGER_PROPAGATES_EXCEPTIONS = True
 
     settings.DEBUG_VIEWS = True
+    settings.SERVE_UPLOADED_FILES = True
 
     settings.SENTRY_ENCRYPTION_SCHEMES = ()
 
@@ -103,6 +115,9 @@ def pytest_configure(config):
         settings.SENTRY_SEARCH = "sentry.search.snuba.EventsDatasetSnubaSearchBackend"
         settings.SENTRY_TSDB = "sentry.tsdb.redissnuba.RedisSnubaTSDB"
         settings.SENTRY_EVENTSTREAM = "sentry.eventstream.snuba.SnubaEventStream"
+
+    if os.environ.get("DISABLE_TEST_SDK", False):
+        settings.SENTRY_SDK_CONFIG = {}
 
     if not hasattr(settings, "SENTRY_OPTIONS"):
         settings.SENTRY_OPTIONS = {}
@@ -134,6 +149,8 @@ def pytest_configure(config):
             "aws-lambda.account-number": "1234",
             "aws-lambda.node.layer-name": "my-layer",
             "aws-lambda.node.layer-version": "3",
+            "aws-lambda.python.layer-name": "my-python-layer",
+            "aws-lambda.python.layer-version": "34",
         }
     )
 
@@ -156,6 +173,7 @@ def pytest_configure(config):
         # Migrations for the "sentry" app take a long time to run, which makes test startup time slow in dev.
         # This is a hack to force django to sync the database state from the models rather than use migrations.
         settings.MIGRATION_MODULES["sentry"] = None
+        settings.MIGRATION_MODULES["demo"] = None
 
     asset_version_patcher = mock.patch(
         "sentry.runner.initializer.get_asset_version", return_value="{version}"
@@ -172,10 +190,9 @@ def pytest_configure(config):
         client.flushdb()
 
     # force celery registration
-    from sentry.celery import app  # NOQA
-
     # disable DISALLOWED_IPS
     from sentry import http
+    from sentry.celery import app  # NOQA
 
     http.DISALLOWED_IPS = set()
 
@@ -188,12 +205,12 @@ def register_extensions():
 
     from sentry import integrations
     from sentry.integrations.example import (
-        ExampleIntegrationProvider,
-        AliasedIntegrationProvider,
-        ExampleRepositoryProvider,
-        ServerExampleProvider,
-        FeatureFlagIntegration,
         AlertRuleIntegrationProvider,
+        AliasedIntegrationProvider,
+        ExampleIntegrationProvider,
+        ExampleRepositoryProvider,
+        FeatureFlagIntegration,
+        ServerExampleProvider,
     )
 
     integrations.register(ExampleIntegrationProvider)
@@ -260,8 +277,9 @@ def pytest_collection_modifyitems(config, items):
         # XXX: For some reason tests in `tests/acceptance` are not being
         # marked as snuba, so deselect test cases not a subclass of SnubaTestCase
         if os.environ.get("RUN_SNUBA_TESTS_ONLY"):
-            from sentry.testutils import SnubaTestCase
             import inspect
+
+            from sentry.testutils import SnubaTestCase
 
             if inspect.isclass(item.cls) and not issubclass(item.cls, SnubaTestCase):
                 # No need to group if we are deselecting this

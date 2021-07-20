@@ -1,18 +1,18 @@
+import logging
+
+import petname
 from django.http import HttpResponse
 from rest_framework import serializers, status
 from rest_framework.fields import SkipField
 from rest_framework.response import Response
 
-import logging
-import petname
-
-from sentry.app import ratelimiter
 from sentry.api.bases.user import UserEndpoint
-from sentry.api.decorators import sudo_required
+from sentry.api.decorators import email_verification_required, sudo_required
+from sentry.api.invite_helper import ApiInviteHelper, remove_invite_cookie
 from sentry.api.serializers import serialize
+from sentry.app import ratelimiter
 from sentry.models import Authenticator
 from sentry.security import capture_security_activity
-from sentry.api.invite_helper import ApiInviteHelper, remove_invite_cookie
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ class UserAuthenticatorEnrollEndpoint(UserEndpoint):
             pass
 
         if interface_id == "totp":
-            response["qrcode"] = interface.get_provision_qrcode(user.email)
+            response["qrcode"] = interface.get_provision_url(user.email)
 
         if interface_id == "u2f":
             response["challenge"] = interface.start_enrollment()
@@ -140,6 +140,7 @@ class UserAuthenticatorEnrollEndpoint(UserEndpoint):
         return Response(response)
 
     @sudo_required
+    @email_verification_required
     def post(self, request, user, interface_id):
         """
         Enroll in authenticator interface

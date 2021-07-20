@@ -1,10 +1,11 @@
-from django.core.urlresolvers import reverse
+from django.urls import reverse
+
 from sentry.models import (
     Dashboard,
     DashboardTombstone,
     DashboardWidget,
-    DashboardWidgetQuery,
     DashboardWidgetDisplayTypes,
+    DashboardWidgetQuery,
 )
 from sentry.testutils import OrganizationDashboardWidgetTestCase
 from sentry.utils.compat import zip
@@ -58,7 +59,7 @@ class OrganizationDashboardDetailsTestCase(OrganizationDashboardWidgetTestCase):
     def assert_serialized_dashboard(self, data, dashboard):
         assert data["id"] == str(dashboard.id)
         assert data["title"] == dashboard.title
-        assert data["createdBy"] == str(dashboard.created_by.id)
+        assert data["createdBy"]["id"] == str(dashboard.created_by.id)
 
 
 class OrganizationDashboardDetailsGetTest(OrganizationDashboardDetailsTestCase):
@@ -100,8 +101,9 @@ class OrganizationDashboardDetailsGetTest(OrganizationDashboardDetailsTestCase):
         assert response.data["id"] == "default-overview"
 
     def test_features_required(self):
-        response = self.do_request("get", self.url("default-overview"), features=[])
-        assert response.status_code == 404
+        with self.feature({"organizations:dashboards-basic": False}):
+            response = self.do_request("get", self.url("default-overview"))
+            assert response.status_code == 404
 
 
 class OrganizationDashboardDetailsDeleteTest(OrganizationDashboardDetailsTestCase):
@@ -132,9 +134,28 @@ class OrganizationDashboardDetailsDeleteTest(OrganizationDashboardDetailsTestCas
         assert response.status_code == 204
         assert DashboardTombstone.objects.filter(organization=self.organization, slug=slug).exists()
 
+    def test_delete_last_dashboard(self):
+        slug = "default-overview"
+        response = self.do_request("delete", self.url(slug))
+        assert response.status_code == 204
+        assert DashboardTombstone.objects.filter(organization=self.organization, slug=slug).exists()
+
+        response = self.do_request("delete", self.url(self.dashboard.id))
+        assert response.status_code == 409
+
+    def test_delete_last_default_dashboard(self):
+        response = self.do_request("delete", self.url(self.dashboard.id))
+        assert response.status_code == 204
+        assert self.client.get(self.url(self.dashboard.id)).status_code == 404
+
+        slug = "default-overview"
+        response = self.do_request("delete", self.url(slug))
+        assert response.status_code == 409
+
     def test_features_required(self):
-        response = self.do_request("delete", self.url("default-overview"), features=[])
-        assert response.status_code == 404
+        with self.feature({"organizations:dashboards-edit": False}):
+            response = self.do_request("delete", self.url("default-overview"))
+            assert response.status_code == 404
 
 
 class OrganizationDashboardDetailsPutTest(OrganizationDashboardDetailsTestCase):
@@ -177,6 +198,13 @@ class OrganizationDashboardDetailsPutTest(OrganizationDashboardDetailsTestCase):
         assert response.status_code == 404
         assert response.data == {"detail": "The requested resource does not exist"}
 
+    def test_feature_required(self):
+        with self.feature({"organizations:dashboards-edit": False}):
+            response = self.do_request(
+                "put", self.url(self.dashboard.id), data={"title": "Dashboard Hello"}
+            )
+            assert response.status_code == 404, response.data
+
     def test_change_dashboard_title(self):
         response = self.do_request(
             "put", self.url(self.dashboard.id), data={"title": "Dashboard Hello"}
@@ -213,11 +241,15 @@ class OrganizationDashboardDetailsPutTest(OrganizationDashboardDetailsTestCase):
                     ],
                 },
                 {
-                    "title": "Errors over time",
-                    "displayType": "line",
+                    "title": "Errors per project",
+                    "displayType": "table",
                     "interval": "5m",
                     "queries": [
-                        {"name": "Errors", "fields": ["count()"], "conditions": "event.type:error"}
+                        {
+                            "name": "Errors",
+                            "fields": ["count()", "project"],
+                            "conditions": "event.type:error",
+                        }
                     ],
                 },
             ],

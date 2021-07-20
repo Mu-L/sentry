@@ -1,18 +1,17 @@
 import datetime
-import jwt
-import re
 import logging
+import re
 from urllib.parse import parse_qs, urlparse, urlsplit
 
-
 from sentry.integrations.atlassian_connect import get_query_hash
-from sentry.shared_integrations.exceptions import ApiError
 from sentry.integrations.client import ApiClient
+from sentry.shared_integrations.exceptions import ApiError
+from sentry.utils import jwt
 from sentry.utils.http import absolute_uri
 
 logger = logging.getLogger("sentry.integrations.jira")
 
-JIRA_KEY = "{}.jira".format(urlparse(absolute_uri()).hostname)
+JIRA_KEY = f"{urlparse(absolute_uri()).hostname}.jira"
 ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 CUSTOMFIELD_PREFIX = "customfield_"
 

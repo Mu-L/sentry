@@ -1,12 +1,12 @@
+from collections import OrderedDict
+
+from django.urls import reverse
+from django.utils.translation import ugettext as _
 from mistune import markdown
 
-from collections import OrderedDict
-from django.core.urlresolvers import reverse
-from django.utils.translation import ugettext as _
-
-from sentry.models import IntegrationExternalProject, OrganizationIntegration, User
 from sentry.integrations.issues import IssueSyncMixin
-from sentry.shared_integrations.exceptions import ApiUnauthorized, ApiError
+from sentry.models import IntegrationExternalProject, OrganizationIntegration, User
+from sentry.shared_integrations.exceptions import ApiError, ApiUnauthorized
 
 
 class VstsIssueSync(IssueSyncMixin):
@@ -145,7 +145,7 @@ class VstsIssueSync(IssueSyncMixin):
         return fields
 
     def get_issue_url(self, key, **kwargs):
-        return "{}_workitems/edit/{}".format(self.instance, str(key))
+        return f"{self.instance}_workitems/edit/{key}"
 
     def create_issue(self, data, **kwargs):
         """

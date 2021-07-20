@@ -1,9 +1,9 @@
+from django.http import StreamingHttpResponse
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
-from django.http import StreamingHttpResponse
 
 from sentry import features
-from sentry.api.bases.organization import OrganizationEndpoint, OrganizationDataExportPermission
+from sentry.api.bases.organization import OrganizationDataExportPermission, OrganizationEndpoint
 from sentry.api.serializers import serialize
 from sentry.models import Project
 from sentry.utils import metrics
@@ -35,7 +35,7 @@ class DataExportDetailsEndpoint(OrganizationEndpoint):
                         detail="You don't have access to some of the data this export contains."
                     )
             # Ignore the download parameter unless we have a file to stream
-            if request.GET.get("download") is not None and data_export.file is not None:
+            if request.GET.get("download") is not None and data_export._get_file() is not None:
                 return self.download(data_export)
             return Response(serialize(data_export, request.user))
         except ExportedData.DoesNotExist:
@@ -43,7 +43,7 @@ class DataExportDetailsEndpoint(OrganizationEndpoint):
 
     def download(self, data_export):
         metrics.incr("dataexport.download", sample_rate=1.0)
-        file = data_export.file
+        file = data_export._get_file()
         raw_file = file.getfile()
         response = StreamingHttpResponse(
             iter(lambda: raw_file.read(4096), b""), content_type="text/csv"

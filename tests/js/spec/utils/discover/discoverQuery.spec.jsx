@@ -1,6 +1,4 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {Client} from 'app/api';
 import DiscoverQuery from 'app/utils/discover/discoverQuery';
@@ -32,7 +30,7 @@ describe('DiscoverQuery', function () {
         data: [{transaction: '/health', count: 1000}],
       },
     });
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <DiscoverQuery
         orgSlug="test-org"
         api={api}
@@ -63,7 +61,7 @@ describe('DiscoverQuery', function () {
         data: [{transaction: '/health', count: 1000}],
       },
     });
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <DiscoverQuery
         orgSlug="test-org"
         api={api}

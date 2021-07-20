@@ -1,18 +1,16 @@
-import pytest
 import re
-
 from uuid import uuid4
 
-from django.core.urlresolvers import reverse
+import pytest
+from django.urls import reverse
+from sentry_relay.auth import generate_key_pair
 
 from sentry import quotas
 from sentry.constants import ObjectStatus
-from sentry.utils import safe, json
-from sentry.models.relay import Relay
 from sentry.models import ProjectKey, ProjectKeyStatus
+from sentry.models.relay import Relay
 from sentry.testutils.helpers import Feature
-
-from sentry_relay.auth import generate_key_pair
+from sentry.utils import json, safe
 
 _date_regex = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$")
 
@@ -366,3 +364,16 @@ def test_relay_disabled_key(
     assert http_cfg == {"disabled": True}
 
     assert projectconfig_cache_set == [{str(default_projectkey.public_key): http_cfg}]
+
+
+@pytest.mark.django_db
+def test_exposes_features(call_endpoint, task_runner):
+    with Feature({"organizations:metrics-extraction": True}):
+        with task_runner():
+            result, status_code = call_endpoint(full_config=True)
+            assert status_code < 400
+
+        for config in result["configs"].values():
+            config = config["config"]
+            assert "features" in config
+            assert config["features"] == ["organizations:metrics-extraction"]

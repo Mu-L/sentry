@@ -4,18 +4,21 @@
 # part of this module. We don't use it directly within the module, but modules
 # that import it from here will. Do not remove.
 
-from simplejson import JSONEncoder, JSONDecodeError, _default_decoder  # NOQA
-from enum import Enum
 import datetime
 import decimal
 import uuid
+from enum import Enum
 from typing import Any
 
-from bitfield.types import BitHandler
+import rapidjson
+import sentry_sdk
 from django.utils.encoding import force_text
 from django.utils.functional import Promise
-from django.utils.html import mark_safe
+from django.utils.safestring import mark_safe
 from django.utils.timezone import is_aware
+from simplejson import JSONDecodeError, JSONEncoder, _default_decoder  # NOQA
+
+from bitfield.types import BitHandler
 
 
 def better_default_encoder(o):
@@ -42,7 +45,7 @@ def better_default_encoder(o):
         return int(o)
     elif callable(o):
         return "<function>"
-    # seralization for certain Django objects here: https://docs.djangoproject.com/en/1.8/topics/serialization/
+    # serialization for certain Django objects here: https://docs.djangoproject.com/en/1.8/topics/serialization/
     elif isinstance(o, Promise):
         return force_text(o)
     raise TypeError(repr(o) + " is not JSON serializable")
@@ -50,15 +53,12 @@ def better_default_encoder(o):
 
 class JSONEncoderForHTML(JSONEncoder):
     # Our variant of JSONEncoderForHTML that also accounts for apostrophes
-    # See: https://github.com/simplejson/simplejson/blob/master/simplejson/encoder.py#L380-L386
+    # See: https://github.com/simplejson/simplejson/blob/master/simplejson/encoder.py
     def encode(self, o):
         # Override JSONEncoder.encode because it has hacks for
         # performance that make things more complicated.
         chunks = self.iterencode(o, True)
-        if self.ensure_ascii:
-            return "".join(chunks)
-        else:
-            return "".join(chunks)
+        return "".join(chunks)
 
     def iterencode(self, o, _one_shot=False):
         chunks = super().iterencode(o, _one_shot)
@@ -71,48 +71,47 @@ class JSONEncoderForHTML(JSONEncoder):
 
 
 _default_encoder = JSONEncoder(
+    # upstream: (', ', ': ')
+    # Ours eliminates whitespace.
     separators=(",", ":"),
+    # upstream: False
+    # True makes nan, inf, -inf serialize as null in compliance with ECMA-262.
     ignore_nan=True,
-    skipkeys=False,
-    ensure_ascii=True,
-    check_circular=True,
-    allow_nan=True,
-    indent=None,
-    encoding="utf-8",
     default=better_default_encoder,
 )
 
 _default_escaped_encoder = JSONEncoderForHTML(
     separators=(",", ":"),
     ignore_nan=True,
-    skipkeys=False,
-    ensure_ascii=True,
-    check_circular=True,
-    allow_nan=True,
-    indent=None,
-    encoding="utf-8",
     default=better_default_encoder,
 )
 
 
-def dump(value, fp, **kwargs):
+JSONData = Any  # https://github.com/python/typing/issues/182
+
+
+def dump(value: JSONData, fp, **kwargs):
     for chunk in _default_encoder.iterencode(value):
         fp.write(chunk)
 
 
-def dumps(value, escape=False, **kwargs):
+def dumps(value: JSONData, escape: bool = False, **kwargs) -> str:
     # Legacy use. Do not use. Use dumps_htmlsafe
     if escape:
         return _default_escaped_encoder.encode(value)
     return _default_encoder.encode(value)
 
 
-def load(fp, **kwargs):
+def load(fp, **kwargs) -> JSONData:
     return loads(fp.read())
 
 
-def loads(value: str, **kwargs) -> Any:
-    return _default_decoder.decode(value)
+def loads(value: str, use_rapid_json: bool = False, **kwargs) -> JSONData:
+    with sentry_sdk.start_span(op="sentry.utils.json.loads"):
+        if use_rapid_json is True:
+            return rapidjson.loads(value)
+        else:
+            return _default_decoder.decode(value)
 
 
 def dumps_htmlsafe(value):

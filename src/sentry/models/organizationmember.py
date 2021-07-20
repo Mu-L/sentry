@@ -1,19 +1,20 @@
-from bitfield import BitField
 from datetime import timedelta
+from enum import Enum
+from hashlib import md5
+from urllib.parse import urlencode
+from uuid import uuid4
+
 from django.conf import settings
-from django.core.urlresolvers import reverse
 from django.db import models, transaction
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.encoding import force_bytes
 from django.utils.translation import ugettext_lazy as _
-from enum import Enum
-from hashlib import md5
 from structlog import get_logger
-from uuid import uuid4
-from urllib.parse import urlencode
 
+from bitfield import BitField
 from sentry import roles
-from sentry.constants import EVENTS_MEMBER_ADMIN_DEFAULT, ALERTS_MEMBER_WRITE_DEFAULT
+from sentry.constants import ALERTS_MEMBER_WRITE_DEFAULT, EVENTS_MEMBER_ADMIN_DEFAULT
 from sentry.db.models import (
     BaseModel,
     BoundedAutoField,
@@ -22,6 +23,7 @@ from sentry.db.models import (
     Model,
     sane_repr,
 )
+from sentry.db.models.manager import BaseManager
 from sentry.models.team import TeamStatus
 from sentry.utils.http import absolute_uri
 
@@ -46,7 +48,7 @@ class OrganizationMemberTeam(BaseModel):
     Identifies relationships between organization members and the teams they are on.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     id = BoundedAutoField(primary_key=True)
     team = FlexibleForeignKey("sentry.Team")
@@ -71,6 +73,18 @@ class OrganizationMemberTeam(BaseModel):
         }
 
 
+class OrganizationMemberManager(BaseManager):
+    def get_contactable_members_for_org(self, organization_id):
+        """
+        Get a list of members we can contact for an organization through email
+        """
+        return self.select_related("user").filter(
+            organization_id=organization_id,
+            invite_status=InviteStatus.APPROVED.value,
+            user__isnull=False,
+        )
+
+
 class OrganizationMember(Model):
     """
     Identifies relationships between organizations and users.
@@ -80,7 +94,9 @@ class OrganizationMember(Model):
     be set to ownership.
     """
 
-    __core__ = True
+    __include_in_export__ = True
+
+    objects = OrganizationMemberManager()
 
     organization = FlexibleForeignKey("sentry.Organization", related_name="member_set")
 
@@ -90,7 +106,12 @@ class OrganizationMember(Model):
     email = models.EmailField(null=True, blank=True, max_length=75)
     role = models.CharField(max_length=32, default=str(roles.get_default().id))
     flags = BitField(
-        flags=(("sso:linked", "sso:linked"), ("sso:invalid", "sso:invalid")), default=0
+        flags=(
+            ("sso:linked", "sso:linked"),
+            ("sso:invalid", "sso:invalid"),
+            ("member-limit:restricted", "member-limit:restricted"),
+        ),
+        default=0,
     )
     token = models.CharField(max_length=64, null=True, blank=True, unique=True)
     date_added = models.DateTimeField(default=timezone.now)
@@ -256,8 +277,8 @@ class OrganizationMember(Model):
         msg.send_async([self.get_email()])
 
     def send_sso_unlink_email(self, actor, provider):
-        from sentry.utils.email import MessageBuilder
         from sentry.models import LostPasswordHash
+        from sentry.utils.email import MessageBuilder
 
         email = self.get_email()
 

@@ -40,7 +40,11 @@ class EventGroupingInfoEndpoint(ProjectEndpoint):
             # Since the hashes are generated on the fly and might no
             # longer match the stored ones we indicate if the hash
             # generation caused the hash to mismatch.
-            d["hashMismatch"] = d["hash"] is not None and d["hash"] not in hashes
+            d["hashMismatch"] = (
+                d["hash"] is not None
+                and d["hash"] not in hashes.hashes
+                and d["hash"] not in hashes.hierarchical_hashes
+            )
             d["key"] = key
             rv[key] = d
 

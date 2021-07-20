@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme, shallow} from 'sentry-test/enzyme';
 
 import {Client} from 'app/api';
@@ -51,6 +49,21 @@ describe('PlatformPicker', function () {
         .map(node => node.prop('platform').id);
       expect(filteredPlatforms).not.toContain('java');
       expect(filteredPlatforms).toContain('python-flask');
+    });
+
+    it('should render renderPlatformList with Native when filtered with c++ alias', function () {
+      const props = {
+        ...baseProps,
+      };
+
+      const wrapper = shallow(<PlatformPicker {...props} />);
+
+      wrapper.setState({category: 'all', filter: 'c++'});
+
+      const filteredPlatforms = wrapper
+        .find('PlatformCard')
+        .map(node => node.prop('platform').id);
+      expect(filteredPlatforms).toContain('native');
     });
 
     it('should render renderPlatformList with community SDKs message if platform not found', function () {

@@ -1,25 +1,23 @@
 import logging
+from uuid import uuid4
 
 from django.conf.urls import url
 from rest_framework.response import Response
-from uuid import uuid4
-
-from social_auth.models import UserSocialAuth
 
 from sentry import options
 from sentry.app import locks
 from sentry.exceptions import PluginError
-from sentry.models import Integration, Organization, OrganizationOption, Repository
-from sentry.plugins.bases.issue2 import IssuePlugin2, IssueGroupActionEndpoint
-from sentry.plugins import providers
-from sentry.utils.http import absolute_uri
-
-from sentry_plugins.base import CorePluginMixin
-from sentry.shared_integrations.constants import ERR_UNAUTHORIZED, ERR_INTERNAL
-from sentry.shared_integrations.exceptions import ApiError
 from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.models import Integration, Organization, OrganizationOption, Repository
+from sentry.plugins import providers
+from sentry.plugins.bases.issue2 import IssueGroupActionEndpoint, IssuePlugin2
+from sentry.shared_integrations.constants import ERR_INTERNAL, ERR_UNAUTHORIZED
+from sentry.shared_integrations.exceptions import ApiError
+from sentry.utils.http import absolute_uri
+from sentry_plugins.base import CorePluginMixin
+from social_auth.models import UserSocialAuth
 
-from .client import GitHubClient, GitHubAppsClient
+from .client import GitHubAppsClient, GitHubClient
 
 API_ERRORS = {
     404: "GitHub returned a 404 Not Found error. If this repository exists, ensure"
@@ -153,9 +151,9 @@ class GitHubPlugin(GitHubMixin, IssuePlugin2):
         ]
 
     def get_allowed_assignees(self, request, group):
-        client = self.get_client(request.user)
         try:
-            response = client.list_assignees(repo=self.get_option("repo", group.project))
+            with self.get_client(request.user) as client:
+                response = client.list_assignees(repo=self.get_option("repo", group.project))
         except Exception as e:
             self.raise_error(e)
 
@@ -165,41 +163,38 @@ class GitHubPlugin(GitHubMixin, IssuePlugin2):
 
     def create_issue(self, request, group, form_data, **kwargs):
         # TODO: support multiple identities via a selection input in the form?
-        client = self.get_client(request.user)
-
-        try:
-            response = client.create_issue(
-                repo=self.get_option("repo", group.project),
-                data={
-                    "title": form_data["title"],
-                    "body": form_data["description"],
-                    "assignee": form_data.get("assignee"),
-                },
-            )
-        except Exception as e:
-            self.raise_error(e)
+        with self.get_client(request.user) as client:
+            try:
+                response = client.create_issue(
+                    repo=self.get_option("repo", group.project),
+                    data={
+                        "title": form_data["title"],
+                        "body": form_data["description"],
+                        "assignee": form_data.get("assignee"),
+                    },
+                )
+            except Exception as e:
+                self.raise_error(e)
 
         return response["number"]
 
     def link_issue(self, request, group, form_data, **kwargs):
-        client = self.get_client(request.user)
-        repo = self.get_option("repo", group.project)
-        try:
-            issue = client.get_issue(repo=repo, issue_id=form_data["issue_id"])
-        except Exception as e:
-            self.raise_error(e)
-
-        comment = form_data.get("comment")
-        if comment:
+        with self.get_client(request.user) as client:
+            repo = self.get_option("repo", group.project)
             try:
-                client.create_comment(repo=repo, issue_id=issue["number"], data={"body": comment})
+                issue = client.get_issue(repo=repo, issue_id=form_data["issue_id"])
+                comment = form_data.get("comment")
+                if comment:
+                    client.create_comment(
+                        repo=repo, issue_id=issue["number"], data={"body": comment}
+                    )
             except Exception as e:
                 self.raise_error(e)
 
         return {"title": issue["title"]}
 
     def get_issue_label(self, group, issue_id, **kwargs):
-        return "GH-%s" % issue_id
+        return f"GH-{issue_id}"
 
     def get_issue_url(self, group, issue_id, **kwargs):
         # XXX: get_option may need tweaked in Sentry so that it can be pre-fetched in bulk
@@ -214,12 +209,11 @@ class GitHubPlugin(GitHubMixin, IssuePlugin2):
             return Response({"issue_id": []})
 
         repo = self.get_option("repo", group.project)
-        client = self.get_client(request.user)
-
-        try:
-            response = client.search_issues(query=(f"repo:{repo} {query}").encode("utf-8"))
-        except Exception as e:
-            return self.handle_api_error(e)
+        with self.get_client(request.user) as client:
+            try:
+                response = client.search_issues(query=(f"repo:{repo} {query}").encode("utf-8"))
+            except Exception as e:
+                return self.handle_api_error(e)
 
         issues = [
             {"text": "(#{}) {}".format(i["number"], i["title"]), "id": i["number"]}
@@ -288,9 +282,9 @@ class GitHubRepositoryProvider(GitHubMixin, providers.RepositoryProvider):
         ```
         """
         if config.get("name"):
-            client = self.get_client(actor)
             try:
-                repo = client.get_repo(config["name"])
+                with self.get_client(actor) as client:
+                    repo = client.get_repo(config["name"])
             except Exception as e:
                 self.raise_error(e)
             else:
@@ -333,32 +327,30 @@ class GitHubRepositoryProvider(GitHubMixin, providers.RepositoryProvider):
         if actor is None:
             raise NotImplementedError("Cannot create a repository anonymously")
 
-        client = self.get_client(actor)
-
-        try:
-            resp = self._create_webhook(client, organization, data["name"])
-        except Exception as e:
-            self.logger.exception(
-                "github.webhook.create-failure",
-                extra={
-                    "organization_id": organization.id,
-                    "repository": data["name"],
-                    "status_code": getattr(e, "code", None),
-                },
-            )
-
-            self.raise_error(e)
-        else:
-            return {
-                "name": data["name"],
-                "external_id": data["external_id"],
-                "url": "https://github.com/{}".format(data["name"]),
-                "config": {
+        with self.get_client(actor) as client:
+            try:
+                resp = self._create_webhook(client, organization, data["name"])
+            except Exception as e:
+                self.logger.exception(
+                    "github.webhook.create-failure",
+                    extra={
+                        "organization_id": organization.id,
+                        "repository": data["name"],
+                        "status_code": getattr(e, "code", None),
+                    },
+                )
+                self.raise_error(e)
+            else:
+                return {
                     "name": data["name"],
-                    "webhook_id": resp["id"],
-                    "webhook_events": resp["events"],
-                },
-            }
+                    "external_id": data["external_id"],
+                    "url": f"https://github.com/{data['name']}",
+                    "config": {
+                        "name": data["name"],
+                        "webhook_id": resp["id"],
+                        "webhook_events": resp["events"],
+                    },
+                }
 
     # TODO(dcramer): let's make this core functionality and move the actual database
     # updates into Sentry core
@@ -366,13 +358,17 @@ class GitHubRepositoryProvider(GitHubMixin, providers.RepositoryProvider):
         if actor is None:
             raise NotImplementedError("Cannot update a repository anonymously")
 
-        client = self.get_client(actor)
         org = Organization.objects.get(id=repo.organization_id)
         webhook_id = repo.config.get("webhook_id")
-        if not webhook_id:
-            resp = self._create_webhook(client, org, repo.config["name"])
-        else:
-            resp = self._update_webhook(client, org, repo.config["name"], repo.config["webhook_id"])
+
+        with self.get_client(actor) as client:
+            if not webhook_id:
+                resp = self._create_webhook(client, org, repo.config["name"])
+            else:
+                resp = self._update_webhook(
+                    client, org, repo.config["name"], repo.config["webhook_id"]
+                )
+
         repo.config.update({"webhook_id": resp["id"], "webhook_events": resp["events"]})
         repo.update(config=repo.config)
 
@@ -381,9 +377,9 @@ class GitHubRepositoryProvider(GitHubMixin, providers.RepositoryProvider):
             raise NotImplementedError("Cannot delete a repository anonymously")
 
         if "webhook_id" in repo.config:
-            client = self.get_client(actor)
             try:
-                client.delete_hook(repo.config["name"], repo.config["webhook_id"])
+                with self.get_client(actor) as client:
+                    client.delete_hook(repo.config["name"], repo.config["webhook_id"])
             except ApiError as exc:
                 if exc.code == 404:
                     return
@@ -404,35 +400,36 @@ class GitHubRepositoryProvider(GitHubMixin, providers.RepositoryProvider):
     def compare_commits(self, repo, start_sha, end_sha, actor=None):
         if actor is None:
             raise NotImplementedError("Cannot fetch commits anonymously")
-        client = self.get_client(actor)
 
         # use config name because that is kept in sync via webhooks
         name = repo.config["name"]
-        if start_sha is None:
-            try:
-                res = client.get_last_commits(name, end_sha)
-            except Exception as e:
-                self.raise_error(e)
+
+        with self.get_client(actor) as client:
+            if start_sha is None:
+                try:
+                    res = client.get_last_commits(name, end_sha)
+                except Exception as e:
+                    self.raise_error(e)
+                else:
+                    return self._format_commits(repo, res[:10])
             else:
-                return self._format_commits(repo, res[:10])
-        else:
-            try:
-                res = client.compare_commits(name, start_sha, end_sha)
-            except Exception as e:
-                self.raise_error(e)
-            else:
-                return self._format_commits(repo, res["commits"])
+                try:
+                    res = client.compare_commits(name, start_sha, end_sha)
+                except Exception as e:
+                    self.raise_error(e)
+                else:
+                    return self._format_commits(repo, res["commits"])
 
         def get_pr_commits(self, repo, number, actor=None):
             # (not currently used by sentry)
             if actor is None:
                 raise NotImplementedError("Cannot fetch commits anonymously")
-            client = self.get_client(actor)
 
             # use config name because that is kept in sync via webhooks
             name = repo.config["name"]
             try:
-                res = client.get_pr_commits(name, number)
+                with self.get_client(actor) as client:
+                    res = client.get_pr_commits(name, number)
             except Exception as e:
                 self.raise_error(e)
             else:
@@ -535,18 +532,17 @@ class GitHubAppsRepositoryProvider(GitHubRepositoryProvider):
                 return self._format_commits(repo, res["commits"])
 
     def get_installations(self, actor):
-        if not actor.is_authenticated():
+        if not actor.is_authenticated:
             raise PluginError(API_ERRORS[401])
 
         auth = UserSocialAuth.objects.filter(user=actor, provider="github_apps").first()
 
         if not auth:
-            self.logger.warn("get_installations.no-linked-auth")
+            self.logger.warning("get_installations.no-linked-auth")
             return []
 
-        client = GitHubClient(auth=auth)
-
-        res = client.get_installations()
+        with GitHubClient(auth=auth) as client:
+            res = client.get_installations()
 
         return [install["id"] for install in res["installations"]]
 

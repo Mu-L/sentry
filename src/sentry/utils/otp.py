@@ -1,15 +1,13 @@
-import time
-import hmac
 import base64
-import qrcode
 import hashlib
-
+import hmac
+import time
 from datetime import datetime
 from urllib.parse import quote
 
-from sentry.utils.dates import to_timestamp
-
 from django.utils.crypto import constant_time_compare, get_random_string
+
+from sentry.utils.dates import to_timestamp
 
 
 def generate_secret_key(length=32):
@@ -95,10 +93,3 @@ class TOTP:
         if self.interval != 30:
             rv += "&period=%d" % self.interval
         return rv
-
-    def get_provision_qrcode(self, user, issuer=None):
-        qr = qrcode.QRCode(border=0)
-        qr.add_data(self.get_provision_url(user, issuer=issuer))
-
-        # Frontend expects the matrix to be serialized as 1/0, not True/False
-        return [[int(c) for c in row] for row in qr.get_matrix()]

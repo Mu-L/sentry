@@ -1,9 +1,9 @@
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import REDIRECT_FIELD_NAME
-from django.core.urlresolvers import reverse
 from django.db import transaction
 from django.http import HttpResponseRedirect
+from django.urls import reverse
 from django.utils.translation import ugettext_lazy as _
 from django.views.decorators.cache import never_cache
 
@@ -11,12 +11,12 @@ from sentry.api.invite_helper import ApiInviteHelper, remove_invite_cookie
 from sentry.auth.superuser import is_active_superuser
 from sentry.constants import WARN_SESSION_EXPIRED
 from sentry.http import get_server_hostname
-from sentry.models import AuthProvider, Organization, OrganizationStatus, OrganizationMember
+from sentry.models import AuthProvider, Organization, OrganizationMember, OrganizationStatus
 from sentry.signals import join_request_link_viewed, user_signup
-from sentry.web.forms.accounts import AuthenticationForm, RegistrationForm
-from sentry.web.frontend.base import BaseView
 from sentry.utils import auth, metrics
 from sentry.utils.sdk import capture_exception
+from sentry.web.forms.accounts import AuthenticationForm, RegistrationForm
+from sentry.web.frontend.base import BaseView
 
 ERR_NO_SSO = _("The organization does not exist or does not have Single Sign-On enabled.")
 
@@ -193,6 +193,27 @@ class AuthLoginView(BaseView):
 
                 if not user.is_active:
                     return self.redirect(reverse("sentry-reactivate-account"))
+                if organization:
+                    if (
+                        self._is_org_member(user, organization)
+                        and request.user
+                        and not is_active_superuser(request)
+                    ):
+                        # set activeorg to ensure correct redirect upon logging in
+                        request.session["activeorg"] = organization.slug
+
+                    if settings.SENTRY_SINGLE_ORGANIZATION:
+                        try:
+                            om = OrganizationMember.objects.get(
+                                organization=organization, email=user.email
+                            )
+                            # XXX(jferge): if user is removed / invited but has an acct,
+                            # pop _next so they aren't in infinite redirect on Single Org Mode
+                        except OrganizationMember.DoesNotExist:
+                            request.session.pop("_next", None)
+                        else:
+                            if om.user is None:
+                                request.session.pop("_next", None)
 
                 return self.redirect(auth.get_login_redirect(request))
             else:
@@ -210,7 +231,6 @@ class AuthLoginView(BaseView):
             "join_request_link": self.get_join_request_link(organization),
         }
         context.update(additional_context.run_callbacks(request))
-
         return self.respond_login(request, context, **kwargs)
 
     def handle_authenticated(self, request):
@@ -227,7 +247,7 @@ class AuthLoginView(BaseView):
     # XXX(dcramer): OAuth provider hooks this view
     def get(self, request, **kwargs):
         next_uri = self.get_next_uri(request)
-        if request.user.is_authenticated():
+        if request.user.is_authenticated:
             # if the user is a superuser, but not 'superuser authenticated'
             # we allow them to re-authenticate to gain superuser status
             if not request.user.is_superuser or is_active_superuser(request):
@@ -235,7 +255,7 @@ class AuthLoginView(BaseView):
 
         request.session.set_test_cookie()
 
-        # we always reset the state on GET so you dont end up at an odd location
+        # we always reset the state on GET so you don't end up at an odd location
         auth.initiate_login(request, next_uri)
 
         # Single org mode -- send them to the org-specific handler

@@ -1,4 +1,4 @@
-import React from 'react';
+import {Fragment} from 'react';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {selectByValue} from 'sentry-test/select-new';
@@ -17,8 +17,8 @@ describe('ResolveActions', function () {
           onUpdate={spy}
           disabled
           hasRelease={false}
-          orgId="org-1"
-          projectId="proj-1"
+          orgSlug="org-1"
+          projectSlug="proj-1"
         />,
         TestStubs.routerContext()
       );
@@ -45,8 +45,8 @@ describe('ResolveActions', function () {
           onUpdate={spy}
           disableDropdown
           hasRelease={false}
-          orgId="org-1"
-          projectId="proj-1"
+          orgSlug="org-1"
+          projectSlug="proj-1"
         />,
         TestStubs.routerContext()
       );
@@ -78,8 +78,8 @@ describe('ResolveActions', function () {
           onUpdate={spy}
           disabled
           hasRelease={false}
-          orgId="org-1"
-          projectId="proj-1"
+          orgSlug="org-1"
+          projectSlug="proj-1"
           isResolved
         />,
         TestStubs.routerContext()
@@ -106,8 +106,8 @@ describe('ResolveActions', function () {
           onUpdate={spy}
           disabled
           hasRelease={false}
-          orgId="org-1"
-          projectId="proj-1"
+          orgSlug="org-1"
+          projectSlug="proj-1"
           isResolved
           isAutoResolved
         />,
@@ -127,8 +127,8 @@ describe('ResolveActions', function () {
         <ResolveActions
           onUpdate={spy}
           hasRelease={false}
-          orgId="org-1"
-          projectId="proj-1"
+          orgSlug="org-1"
+          projectSlug="proj-1"
         />,
         TestStubs.routerContext()
       );
@@ -152,17 +152,17 @@ describe('ResolveActions', function () {
 
     beforeEach(function () {
       component = mountWithTheme(
-        <React.Fragment>
+        <Fragment>
           <GlobalModal />
           <ResolveActions
             onUpdate={spy}
             hasRelease={false}
-            orgId="org-1"
-            projectId="proj-1"
+            orgSlug="org-1"
+            projectSlug="proj-1"
             shouldConfirm
             confirmMessage="Are you sure???"
           />
-        </React.Fragment>,
+        </Fragment>,
         TestStubs.routerContext()
       );
     });
@@ -178,10 +178,10 @@ describe('ResolveActions', function () {
       await tick();
       component.update();
 
-      const modal = component.find('Modal ModalDialog');
+      const modal = component.find('Modal');
       expect(modal.text()).toContain('Are you sure???');
       expect(spy).not.toHaveBeenCalled();
-      modal.find('.modal button[aria-label="Resolve"]').simulate('click');
+      modal.find('button[aria-label="Resolve"]').simulate('click');
 
       expect(spy).toHaveBeenCalled();
     });
@@ -194,15 +194,15 @@ describe('ResolveActions', function () {
       body: [TestStubs.Release()],
     });
     const wrapper = mountWithTheme(
-      <React.Fragment>
+      <Fragment>
         <GlobalModal />
         <ResolveActions
           hasRelease
-          orgId="org-slug"
-          projectId="project-slug"
+          orgSlug="org-slug"
+          projectSlug="project-slug"
           onUpdate={onUpdate}
         />
-      </React.Fragment>,
+      </Fragment>,
       TestStubs.routerContext()
     );
 

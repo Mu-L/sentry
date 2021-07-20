@@ -1,7 +1,6 @@
+from django.urls import reverse
 from pytz import utc
 from rest_framework.exceptions import ParseError
-
-from django.core.urlresolvers import reverse
 
 from sentry.testutils import APITestCase, SnubaTestCase
 from sentry.testutils.helpers.datetime import before_now, iso_format
@@ -50,11 +49,11 @@ class OrganizationEventsMetaEndpoint(APITestCase, SnubaTestCase):
             project_id=self.project.id,
         )
         self.store_event(
-            data={"timestamp": iso_format(self.min_ago), "message": "Delet the Data"},
+            data={"timestamp": iso_format(self.min_ago), "message": "Delete the Data"},
             project_id=self.project.id,
         )
 
-        response = self.client.get(self.url, {"query": "delet"}, format="json")
+        response = self.client.get(self.url, {"query": "delete"}, format="json")
 
         assert response.status_code == 200, response.content
         assert response.data["count"] == 1

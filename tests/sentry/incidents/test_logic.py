@@ -1,25 +1,30 @@
+import unittest
+from datetime import datetime, timedelta
+
 import pytest
 import pytz
 import responses
-from datetime import datetime, timedelta
-from exam import fixture, patcher
-from freezegun import freeze_time
-
-import unittest
 from django.conf import settings
 from django.core import mail
 from django.utils import timezone
+from exam import fixture, patcher
+from freezegun import freeze_time
 
-from sentry.api.event_search import InvalidSearchQuery
+from sentry.exceptions import InvalidSearchQuery
 from sentry.incidents.events import (
     IncidentCommentCreatedEvent,
     IncidentCreatedEvent,
     IncidentStatusUpdatedEvent,
 )
 from sentry.incidents.logic import (
+    CRITICAL_TRIGGER_LABEL,
+    DEFAULT_ALERT_RULE_RESOLUTION,
+    WARNING_TRIGGER_LABEL,
+    WINDOWED_STATS_DATA_POINTS,
     AlertRuleNameAlreadyUsedError,
     AlertRuleTriggerLabelAlreadyUsedError,
     InvalidTriggerActionError,
+    ProjectsNotAssociatedWithAlertRuleError,
     calculate_incident_time_range,
     create_alert_rule,
     create_alert_rule_trigger,
@@ -28,13 +33,11 @@ from sentry.incidents.logic import (
     create_incident,
     create_incident_activity,
     create_incident_snapshot,
-    CRITICAL_TRIGGER_LABEL,
     deduplicate_trigger_actions,
     delete_alert_rule,
     delete_alert_rule_trigger,
     delete_alert_rule_trigger_action,
     disable_alert_rule,
-    DEFAULT_ALERT_RULE_RESOLUTION,
     enable_alert_rule,
     get_actions_for_trigger,
     get_available_action_integrations_for_org,
@@ -44,15 +47,12 @@ from sentry.incidents.logic import (
     get_incident_stats,
     get_incident_subscribers,
     get_triggers_for_alert_rule,
-    ProjectsNotAssociatedWithAlertRuleError,
     subscribe_to_incident,
     translate_aggregate_field,
     update_alert_rule,
-    update_alert_rule_trigger_action,
     update_alert_rule_trigger,
+    update_alert_rule_trigger_action,
     update_incident_status,
-    WARNING_TRIGGER_LABEL,
-    WINDOWED_STATS_DATA_POINTS,
 )
 from sentry.incidents.models import (
     AlertRule,
@@ -65,22 +65,21 @@ from sentry.incidents.models import (
     IncidentActivity,
     IncidentActivityType,
     IncidentProject,
-    PendingIncidentSnapshot,
     IncidentSnapshot,
     IncidentStatus,
     IncidentStatusMethod,
     IncidentSubscription,
     IncidentTrigger,
     IncidentType,
+    PendingIncidentSnapshot,
     TimeSeriesSnapshot,
     TriggerStatus,
 )
-from sentry.snuba.models import QueryDatasets, QuerySubscription, SnubaQueryEventType
+from sentry.models import ActorTuple, PagerDutyService
 from sentry.models.integration import Integration
-from sentry.testutils import TestCase, BaseIncidentsTest
-from sentry.models import PagerDutyService
-
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.snuba.models import QueryDatasets, QuerySubscription, SnubaQueryEventType
+from sentry.testutils import BaseIncidentsTest, TestCase
+from sentry.testutils.helpers.datetime import before_now, iso_format
 from sentry.utils import json
 from sentry.utils.compat.mock import patch
 from sentry.utils.samples import load_data
@@ -674,6 +673,38 @@ class GetIncidentStatsTest(TestCase, BaseIncidentsTest):
             {"time": time, "count": count} for time, count in time_series_values
         ]
 
+    def test_count_with_none(self):
+        alert_rule = self.create_alert_rule(
+            self.organization, dataset=QueryDatasets.TRANSACTIONS, aggregate="p75()"
+        )
+        incident = self.create_incident(
+            self.organization,
+            title="Hi",
+            date_started=timezone.now() - timedelta(days=30),
+            alert_rule=alert_rule,
+        )
+        update_incident_status(
+            incident, IncidentStatus.CLOSED, status_method=IncidentStatusMethod.RULE_TRIGGERED
+        )
+        time_series_values = [[0, 1], [1, None], [2, 5.5]]
+        time_series_snapshot = TimeSeriesSnapshot.objects.create(
+            start=timezone.now() - timedelta(days=120),
+            end=timezone.now() - timedelta(days=110),
+            values=time_series_values,
+            period=3000,
+        )
+        IncidentSnapshot.objects.create(
+            incident=incident,
+            event_stats_snapshot=time_series_snapshot,
+            unique_users=1234,
+            total_events=4567,
+        )
+
+        incident_stats = get_incident_stats(incident, windowed_stats=True)
+        assert incident_stats["event_stats"].data["data"] == [
+            {"time": time, "count": count} for time, count in time_series_values
+        ]
+
 
 class CreateAlertRuleTest(TestCase, BaseIncidentsTest):
     def test(self):
@@ -699,6 +730,7 @@ class CreateAlertRuleTest(TestCase, BaseIncidentsTest):
         )
         assert alert_rule.snuba_query.subscriptions.get().project == self.project
         assert alert_rule.name == name
+        assert alert_rule.owner is None
         assert alert_rule.status == AlertRuleStatus.PENDING.value
         assert alert_rule.snuba_query.subscriptions.all().count() == 1
         assert alert_rule.snuba_query.dataset == QueryDatasets.EVENTS.value
@@ -824,6 +856,32 @@ class CreateAlertRuleTest(TestCase, BaseIncidentsTest):
         assert alert_rule_1.name == alert_rule_2.name
         assert alert_rule_1.status == AlertRuleStatus.SNAPSHOT.value
         assert alert_rule_2.status == AlertRuleStatus.SNAPSHOT.value
+
+    def test_alert_rule_owner(self):
+        alert_rule_1 = create_alert_rule(
+            self.organization,
+            [self.project],
+            "alert rule 1",
+            "level:error",
+            "count()",
+            1,
+            AlertRuleThresholdType.ABOVE,
+            1,
+            owner=ActorTuple.from_actor_identifier(self.user.id),
+        )
+        assert alert_rule_1.owner.id == self.user.actor.id
+        alert_rule_2 = create_alert_rule(
+            self.organization,
+            [self.project],
+            "alert rule 2",
+            "level:error",
+            "count()",
+            1,
+            AlertRuleThresholdType.ABOVE,
+            1,
+            owner=ActorTuple.from_actor_identifier(f"team:{self.team.id}"),
+        )
+        assert alert_rule_2.owner.id == self.team.actor.id
 
 
 class UpdateAlertRuleTest(TestCase, BaseIncidentsTest):
@@ -1040,6 +1098,40 @@ class UpdateAlertRuleTest(TestCase, BaseIncidentsTest):
             assert action_snapshot.target_type == action.target_type
             assert action_snapshot.target_identifier == action.target_identifier
             assert action_snapshot.target_display == action.target_display
+
+    def test_alert_rule_owner(self):
+        alert_rule = create_alert_rule(
+            self.organization,
+            [self.project],
+            "alert rule 1",
+            "level:error",
+            "count()",
+            1,
+            AlertRuleThresholdType.ABOVE,
+            1,
+            owner=ActorTuple.from_actor_identifier(self.user.id),
+        )
+        assert alert_rule.owner.id == self.user.actor.id
+        update_alert_rule(
+            alert_rule=alert_rule,
+            owner=ActorTuple.from_actor_identifier(f"team:{self.team.id}"),
+        )
+        assert alert_rule.owner.id == self.team.actor.id
+        update_alert_rule(
+            alert_rule=alert_rule,
+            owner=ActorTuple.from_actor_identifier(f"user:{self.user.id}"),
+        )
+        assert alert_rule.owner.id == self.user.actor.id
+        update_alert_rule(
+            alert_rule=alert_rule,
+            owner=ActorTuple.from_actor_identifier(self.user.id),
+        )
+        assert alert_rule.owner.id == self.user.actor.id
+        update_alert_rule(
+            alert_rule=alert_rule,
+            name="not updating owner",
+        )
+        assert alert_rule.owner.id == self.user.actor.id
 
 
 class DeleteAlertRuleTest(TestCase, BaseIncidentsTest):

@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {trackAnalyticsEvent} from 'app/utils/analytics';
@@ -11,12 +9,8 @@ jest.mock('app/utils/analytics', () => ({
 }));
 
 const queryCounts = {
-  'is:unresolved is:for_review assigned_or_suggested:me_or_none': {
+  'is:unresolved is:for_review assigned_or_suggested:[me, none]': {
     count: 22,
-    hasMore: false,
-  },
-  'is:unresolved is:for_review': {
-    count: 1,
     hasMore: false,
   },
   'is:unresolved': {
@@ -34,7 +28,7 @@ const queryCounts = {
 };
 
 const queryCountsMaxed = {
-  'is:unresolved is:for_review': {
+  'is:unresolved is:for_review assigned_or_suggested:[me, none]': {
     count: 321,
     hasMore: false,
   },
@@ -62,22 +56,7 @@ describe('IssueListHeader', () => {
     const wrapper = mountWithTheme(
       <IssueListHeader
         organization={organization}
-        query="is:unresolved is:for_review"
-        queryCount={0}
-        queryCounts={queryCounts}
-        projectIds={[]}
-        savedSearchList={[]}
-      />
-    );
-    expect(wrapper.find('.active').text()).toBe('For Review 1');
-  });
-
-  it('renders active tab with count when query matches inbox with assigned_or_suggested:me_or_none', () => {
-    organization.features = ['inbox-owners-query'];
-    const wrapper = mountWithTheme(
-      <IssueListHeader
-        organization={organization}
-        query="is:unresolved is:for_review assigned_or_suggested:me_or_none"
+        query="is:unresolved is:for_review assigned_or_suggested:[me, none]"
         queryCount={0}
         queryCounts={queryCounts}
         projectIds={[]}
@@ -135,7 +114,7 @@ describe('IssueListHeader', () => {
     );
     const tabs = wrapper.find('li');
     expect(tabs.at(0).text()).toBe('All Unresolved 1');
-    expect(tabs.at(1).text()).toBe('For Review 1');
+    expect(tabs.at(1).text()).toBe('For Review 22');
     expect(tabs.at(2).text()).toBe('Ignored ');
   });
 
@@ -172,7 +151,10 @@ describe('IssueListHeader', () => {
     });
     expect(wrapper.find('Link').at(1).prop('to')).toEqual({
       pathname,
-      query: {query: 'is:unresolved is:for_review'},
+      query: {
+        query: 'is:unresolved is:for_review assigned_or_suggested:[me, none]',
+        sort: 'inbox',
+      },
     });
   });
 
@@ -199,7 +181,35 @@ describe('IssueListHeader', () => {
     });
     expect(wrapper.find('Link').at(1).prop('to')).toEqual({
       pathname,
-      query: {query: 'is:unresolved is:for_review', sort: 'inbox'},
+      query: {
+        query: 'is:unresolved is:for_review assigned_or_suggested:[me, none]',
+        sort: 'inbox',
+      },
+    });
+  });
+
+  it('changes sort for inbox tab', () => {
+    const wrapper = mountWithTheme(
+      <IssueListHeader
+        organization={organization}
+        queryCounts={queryCounts}
+        projectIds={[]}
+        savedSearchList={[]}
+        router={TestStubs.router({
+          location: {
+            pathname: '/test/',
+            query: {sort: 'date'},
+          },
+        })}
+      />,
+      TestStubs.routerContext()
+    );
+    expect(wrapper.find('Link').at(1).prop('to')).toEqual({
+      pathname: '/organizations/org-slug/issues/',
+      query: {
+        query: 'is:unresolved is:for_review assigned_or_suggested:[me, none]',
+        sort: 'inbox',
+      },
     });
   });
 
@@ -284,8 +294,8 @@ describe('IssueListHeader', () => {
         savedSearchList={[
           {
             id: '789',
-            query: 'is:unresolved',
-            name: 'Unresolved Search',
+            query: 'is:unresolved TypeError',
+            name: 'Unresolved TypeError',
             isPinned: false,
             isGlobal: true,
           },
@@ -296,6 +306,6 @@ describe('IssueListHeader', () => {
     await tick();
 
     const item = wrapper.find('MenuItem a').first();
-    expect(item.text()).toContain('Unresolved Search');
+    expect(item.text()).toContain('Unresolved TypeError');
   });
 });

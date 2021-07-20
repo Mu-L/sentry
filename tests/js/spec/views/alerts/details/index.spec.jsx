@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 
@@ -204,7 +202,7 @@ describe('IncidentDetails', function () {
     await tick();
     wrapper.update();
 
-    const ruleDetails = wrapper.find('RuleDetails');
-    expect(ruleDetails.find('span').at(1).text()).toBe('Errors');
+    const ruleDetails = wrapper.find('KeyValueTable');
+    expect(ruleDetails.find('Value').at(0).text()).toBe('Errors');
   });
 });

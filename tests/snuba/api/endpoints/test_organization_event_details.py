@@ -1,10 +1,11 @@
 from datetime import timedelta
 
-from django.core.urlresolvers import reverse
-from sentry.utils.samples import load_data
-from sentry.testutils import APITestCase, SnubaTestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from django.urls import NoReverseMatch, reverse
+
 from sentry.models import Group
+from sentry.testutils import APITestCase, SnubaTestCase
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils.samples import load_data
 
 
 def format_project_event(project_slug, event_id):
@@ -174,6 +175,17 @@ class OrganizationEventDetailsEndpointTest(APITestCase, SnubaTestCase):
 
         assert response.status_code == 404, response.content
 
+    def test_invalid_event_id(self):
+        with self.assertRaises(NoReverseMatch):
+            reverse(
+                "sentry-api-0-organization-event-details",
+                kwargs={
+                    "organization_slug": self.project.organization.slug,
+                    "project_slug": self.project.slug,
+                    "event_id": "not-an-event",
+                },
+            )
+
     def test_long_trace_description(self):
         data = load_data("transaction")
         data["event_id"] = "d" * 32
@@ -221,3 +233,31 @@ class OrganizationEventDetailsEndpointTest(APITestCase, SnubaTestCase):
         assert response.status_code == 200, response.content
         assert response.data["id"] == "a" * 32
         assert response.data["projectSlug"] == self.project.slug
+
+    def test_out_of_retention(self):
+        self.store_event(
+            data={
+                "event_id": "d" * 32,
+                "message": "oh no",
+                "timestamp": iso_format(before_now(days=2)),
+                "fingerprint": ["group-1"],
+            },
+            project_id=self.project.id,
+        )
+
+        url = reverse(
+            "sentry-api-0-organization-event-details",
+            kwargs={
+                "organization_slug": self.project.organization.slug,
+                "project_slug": self.project.slug,
+                "event_id": "d" * 32,
+            },
+        )
+
+        with self.options({"system.event-retention-days": 1}):
+            response = self.client.get(
+                url,
+                format="json",
+            )
+
+        assert response.status_code == 400, response.content

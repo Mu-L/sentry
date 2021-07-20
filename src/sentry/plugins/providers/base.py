@@ -1,10 +1,9 @@
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from rest_framework.response import Response
-from social_auth.models import UserSocialAuth
-
-from sentry.models import Integration, OrganizationIntegration
 
 from sentry.exceptions import InvalidIdentity, PluginError
+from sentry.models import Integration, OrganizationIntegration
+from social_auth.models import UserSocialAuth
 
 
 class ProviderMixin:
@@ -82,7 +81,7 @@ class ProviderMixin:
             if has_auth:
                 return False
 
-        if not user.is_authenticated():
+        if not user.is_authenticated:
             return True
 
         return not UserSocialAuth.objects.filter(user=user, provider=self.auth_provider).exists()
@@ -104,7 +103,7 @@ class ProviderMixin:
             else:
                 return auth
 
-        if not user.is_authenticated():
+        if not user.is_authenticated:
             return None
 
         return UserSocialAuth.objects.filter(user=user, provider=self.auth_provider).first()

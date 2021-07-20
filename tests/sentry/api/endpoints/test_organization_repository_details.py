@@ -1,28 +1,20 @@
-from sentry.utils.compat.mock import patch
-
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.constants import ObjectStatus
 from sentry.models import Commit, Integration, OrganizationOption, Repository
 from sentry.testutils import APITestCase
+from sentry.testutils.helpers import with_feature
+from sentry.utils.compat.mock import patch
 
 
 class OrganizationRepositoryDeleteTest(APITestCase):
-    def setUp(self):
-        super().setUp()
-
-        class mock_uuid:
-            hex = "1234567"
-
-        self.mock_uuid = mock_uuid
-
     def assert_rename_pending_delete(self, response, repo, external_id=None):
         assert response.data["status"] == "pending_deletion"
         assert response.data["name"] == "example"  # name displayed matches what the user expects
 
         assert repo.status == ObjectStatus.PENDING_DELETION
-        assert repo.name == "1234567"
-        assert repo.external_id == "1234567"
+        assert repo.name == "abc123"
+        assert repo.external_id == "abc123"
         assert repo.config["pending_deletion_name"] == "example"
 
         option = OrganizationOption.objects.get(
@@ -46,7 +38,7 @@ class OrganizationRepositoryDeleteTest(APITestCase):
         repo = Repository.objects.create(name="example", organization_id=org.id)
 
         url = reverse("sentry-api-0-organization-repository-details", args=[org.slug, repo.id])
-        with patch("sentry.db.mixin.uuid4", new=self.mock_uuid):
+        with patch("sentry.db.mixin.uuid4", new=self.get_mock_uuid()):
             response = self.client.delete(url)
         assert response.status_code == 202, (response.status_code, response.content)
 
@@ -73,7 +65,7 @@ class OrganizationRepositoryDeleteTest(APITestCase):
 
         url = reverse("sentry-api-0-organization-repository-details", args=[org.slug, repo.id])
 
-        with patch("sentry.db.mixin.uuid4", new=self.mock_uuid):
+        with patch("sentry.db.mixin.uuid4", new=self.get_mock_uuid()):
             response = self.client.delete(url)
 
         assert response.status_code == 202, (response.status_code, response.content)
@@ -103,7 +95,7 @@ class OrganizationRepositoryDeleteTest(APITestCase):
 
         url = reverse("sentry-api-0-organization-repository-details", args=[org.slug, repo.id])
 
-        with patch("sentry.db.mixin.uuid4", new=self.mock_uuid):
+        with patch("sentry.db.mixin.uuid4", new=self.get_mock_uuid()):
             response = self.client.delete(url)
         assert response.status_code == 202, (response.status_code, response.content)
 
@@ -131,7 +123,7 @@ class OrganizationRepositoryDeleteTest(APITestCase):
 
         url = reverse("sentry-api-0-organization-repository-details", args=[org.slug, repo.id])
 
-        with patch("sentry.db.mixin.uuid4", new=self.mock_uuid):
+        with patch("sentry.db.mixin.uuid4", new=self.get_mock_uuid()):
             response = self.client.delete(url)
 
         assert response.status_code == 202, (response.status_code, response.content)
@@ -164,6 +156,72 @@ class OrganizationRepositoryDeleteTest(APITestCase):
         repo = Repository.objects.get(id=repo.id)
         assert repo.status == ObjectStatus.VISIBLE
         assert repo.integration_id == integration.id
+
+    @with_feature("organizations:integrations-custom-scm")
+    def test_put_custom_scm_repo(self):
+        """
+        Allow repositories that are tied to Custom SCM integrations
+        to be able to update `name` and `url`.
+        """
+        self.login_as(user=self.user)
+
+        org = self.create_organization(owner=self.user, name="baz")
+        integration = Integration.objects.create(
+            provider="integrations:custom_scm", name="some-org"
+        )
+        integration.add_organization(org)
+
+        repo = Repository.objects.create(
+            name="some-org/example",
+            organization_id=org.id,
+            integration_id=integration.id,
+            provider="integrations:custom_scm",
+        )
+
+        url = reverse("sentry-api-0-organization-repository-details", args=[org.slug, repo.id])
+        response = self.client.put(
+            url, data={"url": "https://example.com/some-org/repo", "name": "some-org/new-name"}
+        )
+
+        assert response.status_code == 200
+        repo = Repository.objects.get(id=repo.id)
+        assert repo.url == "https://example.com/some-org/repo"
+        assert repo.name == "some-org/new-name"
+
+        # test that empty url sets it back to None
+        response = self.client.put(url, data={"url": ""})
+        repo = Repository.objects.get(id=repo.id)
+        assert repo.url is None
+        assert repo.name == "some-org/new-name"
+
+    @with_feature("organizations:integrations-custom-scm")
+    def test_no_name_or_url_updates(self):
+        """
+        Repositories that are not tied to Custom SCM integrations
+        *cannot* update their `name` or `url`.
+
+        This is true for repos in the following categories:
+         * 'Unknown provider'
+         * Plugins
+         * First Party Integrations (non Custom SCM)
+        """
+        self.login_as(user=self.user)
+
+        org = self.create_organization(owner=self.user, name="baz")
+        repo = Repository.objects.create(
+            name="example", organization_id=org.id, url="https:/example.com/"
+        )
+
+        url = reverse("sentry-api-0-organization-repository-details", args=[org.slug, repo.id])
+        response = self.client.put(
+            url, data={"url": "https://example.com/some-org/repo", "name": "some-org/new-name"}
+        )
+
+        assert response.status_code == 200
+        repo = Repository.objects.get(id=repo.id)
+        # no changes were made
+        assert repo.url == "https:/example.com/"
+        assert repo.name == "example"
 
     def test_put_cancel_deletion(self):
         self.login_as(user=self.user)

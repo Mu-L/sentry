@@ -1,5 +1,4 @@
 import logging
-
 from uuid import uuid4
 
 from django.apps import apps
@@ -10,7 +9,6 @@ from sentry.constants import ObjectStatus
 from sentry.exceptions import DeleteAborted
 from sentry.signals import pending_delete
 from sentry.tasks.base import instrumented_task, retry, track_group_async_operation
-
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +151,8 @@ def delete_organization(object_id, transaction_id=None, actor_id=None, **kwargs)
 @retry(exclude=(DeleteAborted,))
 def delete_team(object_id, transaction_id=None, **kwargs):
     from sentry import deletions
-    from sentry.models import Team, TeamStatus
+    from sentry.incidents.models import AlertRule
+    from sentry.models import Rule, Team, TeamStatus
 
     try:
         instance = Team.objects.get(id=object_id)
@@ -166,6 +165,9 @@ def delete_team(object_id, transaction_id=None, **kwargs):
     task = deletions.get(
         model=Team, query={"id": object_id}, transaction_id=transaction_id or uuid4().hex
     )
+    AlertRule.objects.filter(owner_id=instance.actor_id).update(owner=None)
+    Rule.objects.filter(owner_id=instance.actor_id).update(owner=None)
+
     has_more = task.chunk()
     if has_more:
         delete_team.apply_async(
@@ -365,7 +367,7 @@ def delete_repository(object_id, transaction_id=None, actor_id=None, **kwargs):
 @retry(exclude=(DeleteAborted,))
 def delete_organization_integration(object_id, transaction_id=None, actor_id=None, **kwargs):
     from sentry import deletions
-    from sentry.models import OrganizationIntegration, Repository, Identity
+    from sentry.models import Identity, OrganizationIntegration, Repository
 
     try:
         instance = OrganizationIntegration.objects.get(id=object_id)
@@ -389,7 +391,7 @@ def delete_organization_integration(object_id, transaction_id=None, actor_id=Non
         try:
             identity = Identity.objects.get(id=instance.default_auth_id)
         except Identity.DoesNotExist:
-            # the identity may not exist for a variety of reasons but for debugging puproses
+            # the identity may not exist for a variety of reasons but for debugging purposes
             # we should keep track
             logger.info("delete_organization_integration.identity_does_not_exist", extra=log_info)
         else:

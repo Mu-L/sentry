@@ -1,10 +1,11 @@
 from datetime import timedelta
+
 from django.utils import timezone
 from rest_framework.response import Response
 
 from sentry.api.base import EnvironmentMixin
 from sentry.api.bases.team import TeamEndpoint
-from sentry.api.serializers import serialize, GroupSerializer
+from sentry.api.serializers import GroupSerializer, serialize
 from sentry.models import Group, GroupStatus, Project
 
 
@@ -39,7 +40,7 @@ class TeamGroupsNewEndpoint(TeamEndpoint, EnvironmentMixin):
         )
 
         for group in group_list:
-            group._project_cache = project_dict.get(group.project_id)
+            group.set_cached_field_value("project", project_dict.get(group.project_id))
 
         return Response(
             serialize(

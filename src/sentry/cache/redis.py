@@ -20,21 +20,28 @@ class CommonRedisCache(BaseCache):
         key = self.make_key(key, version=version)
         v = json.dumps(value) if not raw else value
         if len(v) > self.max_size:
-            raise ValueTooLarge("Cache key too large: {!r} {!r}".format(key, len(v)))
+            raise ValueTooLarge(f"Cache key too large: {key!r} {len(v)!r}")
         if timeout:
             self.client.setex(key, int(timeout), v)
         else:
             self.client.set(key, v)
 
+        self._mark_transaction("set")
+
     def delete(self, key, version=None):
         key = self.make_key(key, version=version)
         self.client.delete(key)
+
+        self._mark_transaction("delete")
 
     def get(self, key, version=None, raw=False):
         key = self.make_key(key, version=version)
         result = self.client.get(key)
         if result is not None and not raw:
             result = json.loads(result)
+
+        self._mark_transaction("get")
+
         return result
 
 

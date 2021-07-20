@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 
 import pytz
+from django.urls import reverse
 from django.utils import timezone
-from django.core.urlresolvers import reverse
 from exam import fixture
 
 from sentry.api.endpoints.project_releases import ReleaseWithVersionSerializer
@@ -187,8 +187,8 @@ class ProjectReleaseListEnvironmentsTest(APITestCase):
         assert response.status_code == 200, response.content
         assert len(response.data) == len(releases)
 
-        response_versions = sorted([r["version"] for r in response.data])
-        releases_versions = sorted([r.version for r in releases])
+        response_versions = sorted(r["version"] for r in response.data)
+        releases_versions = sorted(r.version for r in releases)
         assert response_versions == releases_versions
 
     def assert_release_details(self, release, new_issues_count, first_seen, last_seen):
@@ -593,8 +593,14 @@ class ProjectReleaseCreateCommitPatch(ReleaseCommitPatchTest):
         )
 
         assert response.status_code == 400
-        assert dict(response.data) == {
-            "commits": {"patch_set": {"type": ["Commit patch_set type Z is not supported."]}}
+        assert response.json() == {
+            "commits": {
+                "patch_set": {
+                    "type": [
+                        "Commit patch_set type Z is not supported.",
+                    ]
+                }
+            }
         }
 
 

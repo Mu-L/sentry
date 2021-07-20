@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import Model, BoundedBigIntegerField, sane_repr
+from sentry.db.models import BoundedBigIntegerField, Model, sane_repr
 
 
 class ProjectPlatform(Model):
@@ -11,7 +11,7 @@ class ProjectPlatform(Model):
     Note: This model is used solely for analytics.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     project_id = BoundedBigIntegerField()
     platform = models.CharField(max_length=64)

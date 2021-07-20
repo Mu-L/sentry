@@ -4,18 +4,15 @@ from django.db.models import Max
 from rest_framework import serializers
 
 from sentry.api.serializers.rest_framework import CamelSnakeSerializer
-from sentry.api.event_search import (
-    resolve_field_list,
-    get_filter,
-    get_function_alias,
-    InvalidSearchQuery,
-)
+from sentry.exceptions import InvalidSearchQuery
 from sentry.models import (
-    DashboardWidget,
-    DashboardWidgetQuery,
-    DashboardWidgetDisplayTypes,
     Dashboard,
+    DashboardWidget,
+    DashboardWidgetDisplayTypes,
+    DashboardWidgetQuery,
 )
+from sentry.search.events.fields import get_function_alias, resolve_field_list
+from sentry.search.events.filter import get_filter
 from sentry.utils.dates import parse_stats_period
 
 
@@ -67,7 +64,7 @@ class DashboardWidgetQuerySerializer(CamelSnakeSerializer):
 
         # Validate the query that would be created when run.
         conditions = self._get_attr(data, "conditions", "")
-        fields = self._get_attr(data, "fields", [])
+        fields = self._get_attr(data, "fields", []).copy()
         orderby = self._get_attr(data, "orderby", "")
         try:
             # When using the eps/epm functions, they require an interval argument
@@ -77,6 +74,8 @@ class DashboardWidgetQuerySerializer(CamelSnakeSerializer):
             params = {
                 "start": datetime.now() - timedelta(days=1),
                 "end": datetime.now(),
+                "project_id": [p.id for p in self.context.get("projects")],
+                "organization_id": self.context.get("organization").id,
             }
 
             snuba_filter = get_filter(conditions, params=params)

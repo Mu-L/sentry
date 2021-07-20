@@ -1,7 +1,8 @@
 from datetime import timedelta
+
 from django.conf import settings
-from django.core.urlresolvers import reverse
 from django.db import models
+from django.urls import reverse
 from django.utils import timezone
 
 from sentry.db.models import FlexibleForeignKey, Model, sane_repr
@@ -11,7 +12,7 @@ CHARACTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 class LostPasswordHash(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL, unique=True)
     hash = models.CharField(max_length=32)

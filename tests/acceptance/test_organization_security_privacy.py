@@ -1,6 +1,5 @@
-from sentry.utils import json
-
 from sentry.testutils import AcceptanceTestCase
+from sentry.utils import json
 
 
 class OrganizationSecurityAndPrivacyTest(AcceptanceTestCase):
@@ -42,9 +41,9 @@ class OrganizationSecurityAndPrivacyTest(AcceptanceTestCase):
             '[data-test-id="organization-settings-security-and-privacy"] .error'
         )
         self.browser.click("#require2FA")
-        self.browser.wait_until(".modal")
-        self.browser.click('.modal [data-test-id="confirm-button"]')
-        self.browser.wait_until_not(".modal")
+        self.browser.wait_until("[role='dialog']")
+        self.browser.click("[role='dialog'] [data-test-id='confirm-button']")
+        self.browser.wait_until_not("[role='dialog']")
         self.browser.wait_until_test_id("toast-error")
         self.load_organization_helper("setting 2fa without 2fa enabled")
 

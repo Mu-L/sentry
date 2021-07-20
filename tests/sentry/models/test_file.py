@@ -1,6 +1,9 @@
 import os
+from io import BytesIO
+from unittest.mock import patch
 
 from django.core.files.base import ContentFile
+from django.db import DatabaseError
 
 from sentry.models import File, FileBlob, FileBlobIndex
 from sentry.testutils import TestCase
@@ -34,6 +37,24 @@ class FileBlobTest(TestCase):
         # Check uniqueness
         path2 = FileBlob.generate_unique_path()
         assert path != path2
+
+    @patch("sentry.models.file.delete_file_task")
+    def test_delete_handles_database_error(self, mock_delete_file):
+        fileobj = ContentFile(b"foo bar")
+        baz_file = File.objects.create(name="baz-v1.js", type="default", size=7)
+        baz_file.putfile(fileobj)
+        blob = baz_file.blobs.all()[0]
+
+        with patch("sentry.models.file.super") as mock_super:
+            mock_super.side_effect = DatabaseError("server closed connection")
+            with self.tasks(), self.assertRaises(DatabaseError):
+                blob.delete()
+        # Even those postgres failed we should stil queue
+        # a task to delete the filestore object.
+        assert mock_delete_file.apply_async.call_count == 1
+
+        # blob is still around.
+        assert FileBlob.objects.get(id=blob.id)
 
 
 class FileTest(TestCase):
@@ -105,6 +126,34 @@ class FileTest(TestCase):
 
         with self.assertRaises(ValueError):
             fp.read()
+
+    def test_seek(self):
+        """Test behavior of seek with difference values for whence"""
+        bytes = BytesIO(b"abcdefghijklmnopqrstuvwxyz")
+        file1 = File.objects.create(name="baz.js", type="default", size=26)
+        results = file1.putfile(bytes, 5)
+        assert len(results) == 6
+
+        with file1.getfile() as fp:
+            assert fp.read() == b"abcdefghijklmnopqrstuvwxyz"
+
+            fp.seek(0, 2)
+            bytes.seek(0, 2)
+            assert fp.tell() == bytes.tell() == 26
+            assert fp.read() == bytes.read() == b""
+
+            fp.seek(-1, 2)
+            bytes.seek(-1, 2)
+            assert fp.tell() == bytes.tell() == 25
+            assert fp.read() == bytes.read() == b"z"
+
+            fp.seek(-10, 1)
+            bytes.seek(-10, 1)
+            assert fp.tell() == bytes.tell() == 16
+            assert fp.read() == bytes.read() == b"qrstuvwxyz"
+
+            with self.assertRaises(ValueError):
+                fp.seek(0, 666)
 
     def test_multi_chunk_prefetch(self):
         random_data = os.urandom(1 << 25)

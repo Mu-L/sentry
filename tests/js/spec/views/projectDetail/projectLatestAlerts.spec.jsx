@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 
@@ -127,12 +125,12 @@ describe('ProjectDetail > ProjectLatestAlerts', function () {
 
     expect(createRuleButton.text()).toBe('Create Alert');
     expect(createRuleButton.prop('to')).toBe(
-      `/organizations/${organization.slug}/alerts/${project.slug}/new/`
+      `/organizations/${organization.slug}/alerts/${project.slug}/wizard/?referrer=project_detail`
     );
 
     expect(learnMoreButton.text()).toBe('Learn More');
     expect(learnMoreButton.prop('href')).toBe(
-      'https://docs.sentry.io/workflow/alerts-notifications/alerts/'
+      'https://docs.sentry.io/product/alerts-notifications/metric-alerts/'
     );
   });
 

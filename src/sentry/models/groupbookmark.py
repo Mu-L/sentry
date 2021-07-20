@@ -2,7 +2,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import FlexibleForeignKey, Model, BaseManager, sane_repr
+from sentry.db.models import BaseManager, FlexibleForeignKey, Model, sane_repr
 
 
 class GroupBookmark(Model):
@@ -11,7 +11,7 @@ class GroupBookmark(Model):
     aggregated event (Group).
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     project = FlexibleForeignKey("sentry.Project", related_name="bookmark_set")
     group = FlexibleForeignKey("sentry.Group", related_name="bookmark_set")

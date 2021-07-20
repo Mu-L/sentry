@@ -1,20 +1,19 @@
-import sentry
-
-from django.core.cache import cache
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.messages import get_messages
+from django.core.cache import cache
 from django.db.models import F
 from pkg_resources import parse_version
 
+import sentry
 from sentry import features, options
 from sentry.api.serializers.base import serialize
 from sentry.api.serializers.models.user import DetailedUserSerializer
 from sentry.auth.superuser import is_active_superuser
 from sentry.models import ProjectKey
 from sentry.utils import auth
+from sentry.utils.assets import get_unversioned_asset_url
 from sentry.utils.email import is_smtp_enabled
-from sentry.utils.assets import get_asset_url
 from sentry.utils.support import get_support_mail
 
 
@@ -114,7 +113,7 @@ def get_client_config(request=None):
 
         # User identity is used by the sentry SDK
         user_identity = {"ip_address": request.META["REMOTE_ADDR"]}
-        if user and user.is_authenticated():
+        if user and user.is_authenticated:
             user_identity.update({"email": user.email, "id": user.id, "isStaff": user.is_staff})
             if user.name:
                 user_identity["name"] = user.name
@@ -147,7 +146,7 @@ def get_client_config(request=None):
         "urlPrefix": options.get("system.url-prefix"),
         "version": version_info,
         "features": enabled_features,
-        "distPrefix": get_asset_url("sentry", "dist/"),
+        "distPrefix": get_unversioned_asset_url("sentry", ""),
         "needsUpgrade": needs_upgrade,
         "dsn": public_dsn,
         "dsn_requests": _get_dsn_requests(),
@@ -177,8 +176,9 @@ def get_client_config(request=None):
                 else list("" if settings.ALLOWED_HOSTS == ["*"] else settings.ALLOWED_HOSTS)
             ),
         },
+        "demoMode": settings.DEMO_MODE,
     }
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         context.update(
             {"isAuthenticated": True, "user": serialize(user, user, DetailedUserSerializer())}
         )

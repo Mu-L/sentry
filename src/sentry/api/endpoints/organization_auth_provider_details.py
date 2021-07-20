@@ -1,7 +1,7 @@
 from rest_framework import status
 from rest_framework.response import Response
 
-from sentry.api.bases.organization import OrganizationEndpoint, OrganizationAuthProviderPermission
+from sentry.api.bases.organization import OrganizationAuthProviderPermission, OrganizationEndpoint
 from sentry.api.serializers import serialize
 from sentry.models import AuthProvider
 
@@ -26,6 +26,6 @@ class OrganizationAuthProviderDetailsEndpoint(OrganizationEndpoint):
             return Response(status=status.HTTP_204_NO_CONTENT)
 
         # cache organization so that we don't need to query for org when serializing
-        auth_provider._organization_cache = organization
+        auth_provider.set_cached_field_value("organization", organization)
 
         return Response(serialize(auth_provider, request.user))

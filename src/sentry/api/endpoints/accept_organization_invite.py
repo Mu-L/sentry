@@ -1,11 +1,11 @@
+from django.urls import reverse
 from rest_framework import status
 from rest_framework.response import Response
-from django.core.urlresolvers import reverse
 
-from sentry.utils import auth
 from sentry.api.base import Endpoint
-from sentry.models import OrganizationMember, AuthProvider
 from sentry.api.invite_helper import ApiInviteHelper, add_invite_cookie, remove_invite_cookie
+from sentry.models import AuthProvider, OrganizationMember
+from sentry.utils import auth
 
 
 class AcceptOrganizationInvite(Endpoint):
@@ -41,7 +41,6 @@ class AcceptOrganizationInvite(Endpoint):
         data = {
             "orgSlug": organization.slug,
             "needsAuthentication": not helper.user_authenticated,
-            "needs2fa": helper.needs_2fa,
             "needsSso": auth_provider is not None,
             "requireSso": auth_provider is not None and not auth_provider.flags.allow_unlinked,
             # If they're already a member of the organization its likely
@@ -75,7 +74,9 @@ class AcceptOrganizationInvite(Endpoint):
             provider = auth_provider.get_provider()
             data["ssoProvider"] = provider.name
 
-        if helper.needs_2fa:
+        onboarding_steps = helper.get_onboarding_steps()
+        data.update(onboarding_steps)
+        if any(onboarding_steps.values()):
             add_invite_cookie(request, response, member_id, token)
 
         response.data = data

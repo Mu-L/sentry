@@ -1,13 +1,14 @@
 from django.db import models, transaction
-from sentry.db.models.fields import JSONField
-from sentry.db.models import Model, FlexibleForeignKey, sane_repr
 
+from sentry.db.models import FlexibleForeignKey, Model, sane_repr
+from sentry.db.models.fields import JSONField
 
 MAX_KEY_TRANSACTIONS = 10
+MAX_TEAM_KEY_TRANSACTIONS = 100
 
 
 class DiscoverSavedQueryProject(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     project = FlexibleForeignKey("sentry.Project")
     discover_saved_query = FlexibleForeignKey("sentry.DiscoverSavedQuery")
@@ -23,7 +24,7 @@ class DiscoverSavedQuery(Model):
     A saved Discover query
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     projects = models.ManyToManyField("sentry.Project", through=DiscoverSavedQueryProject)
     organization = FlexibleForeignKey("sentry.Organization")
@@ -61,7 +62,7 @@ class DiscoverSavedQuery(Model):
 
 
 class KeyTransaction(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     # max_length here is based on the maximum for transactions in relay
     transaction = models.CharField(max_length=200)
@@ -73,3 +74,17 @@ class KeyTransaction(Model):
         app_label = "sentry"
         db_table = "sentry_discoverkeytransaction"
         unique_together = (("project", "owner", "transaction"),)
+
+
+class TeamKeyTransaction(Model):
+    __include_in_export__ = False
+
+    # max_length here is based on the maximum for transactions in relay
+    transaction = models.CharField(max_length=200)
+    project_team = FlexibleForeignKey("sentry.ProjectTeam", null=True, db_constraint=False)
+    organization = FlexibleForeignKey("sentry.Organization")
+
+    class Meta:
+        app_label = "sentry"
+        db_table = "sentry_performanceteamkeytransaction"
+        unique_together = (("project_team", "transaction"),)

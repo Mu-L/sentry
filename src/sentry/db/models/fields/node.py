@@ -1,16 +1,16 @@
-from base64 import b64encode
 import collections
 import logging
 import pickle
+from base64 import b64encode
 from uuid import uuid4
 
 from django.db.models.signals import post_delete
 
 from sentry import nodestore
-from sentry.utils.cache import memoize
-from sentry.utils.strings import decompress, compress
-from sentry.utils.canonical import CANONICAL_TYPES, CanonicalKeyDict
 from sentry.db.models.utils import Creator
+from sentry.utils.cache import memoize
+from sentry.utils.canonical import CANONICAL_TYPES, CanonicalKeyDict
+from sentry.utils.strings import compress, decompress
 
 from .gzippeddict import GzippedDictField
 
@@ -83,7 +83,7 @@ class NodeData(collections.MutableMapping):
     def __repr__(self):
         cls_name = type(self).__name__
         if self._node_data:
-            return "<{}: id={} data={!r}>".format(cls_name, self.id, repr(self._node_data))
+            return f"<{cls_name}: id={self.id} data={self._node_data!r}>"
         return f"<{cls_name}: id={self.id}>"
 
     def get_ref(self, instance):

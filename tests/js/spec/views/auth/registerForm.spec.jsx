@@ -1,7 +1,6 @@
-import React from 'react';
 import {browserHistory} from 'react-router';
 
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import ConfigStore from 'app/stores/configStore';
 import RegisterForm from 'app/views/auth/registerForm';
@@ -42,7 +41,7 @@ describe('Register', function () {
 
     const authConfig = {};
 
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <RegisterForm api={api} authConfig={authConfig} />,
       routerContext
     );
@@ -71,7 +70,7 @@ describe('Register', function () {
     });
 
     const authConfig = {};
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <RegisterForm api={api} authConfig={authConfig} />,
       routerContext
     );

@@ -1,15 +1,16 @@
-from bitfield import BitField
+from uuid import uuid4
+
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
-from uuid import uuid4
 
+from bitfield import BitField
 from sentry.db.models import (
     ArrayField,
-    Model,
     BaseManager,
     BoundedPositiveIntegerField,
     FlexibleForeignKey,
+    Model,
     sane_repr,
 )
 from sentry.utils.compat import filter
@@ -22,7 +23,7 @@ class ApiKeyStatus:
 
 
 class ApiKey(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     organization = FlexibleForeignKey("sentry.Organization", related_name="key_set")
     label = models.CharField(max_length=64, blank=True, default="Default")

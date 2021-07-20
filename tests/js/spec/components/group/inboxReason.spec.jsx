@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import InboxReason from 'app/components/group/inboxBadges/inboxReason';
@@ -28,5 +26,25 @@ describe('InboxReason', () => {
     const wrapper = mountWithTheme(<InboxReason inbox={inbox} />);
     const tooltip = mountWithTheme(wrapper.find('Tooltip').prop('title'));
     expect(tooltip.text()).toContain('Mark Reviewed to remove this label');
+  });
+
+  it('has affected user count', () => {
+    const wrapper = mountWithTheme(
+      <InboxReason
+        inbox={{
+          ...inbox,
+          reason: 1,
+          reason_details: {
+            count: null,
+            until: null,
+            user_count: 10,
+            user_window: null,
+            window: null,
+          },
+        }}
+      />
+    );
+    const tooltip = mountWithTheme(wrapper.find('Tooltip').prop('title'));
+    expect(tooltip.text()).toContain('Affected 10 user(s)');
   });
 });

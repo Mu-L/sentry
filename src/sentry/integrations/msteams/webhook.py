@@ -1,50 +1,44 @@
 import logging
-import jwt
 import time
 
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.exceptions import AuthenticationFailed, NotAuthenticated
 
-from sentry import eventstore, options, analytics
+from sentry import analytics, eventstore, options
 from sentry.api import client
 from sentry.api.base import Endpoint
 from sentry.models import (
     ApiKey,
     AuditLogEntryEvent,
-    Integration,
-    IdentityProvider,
-    Identity,
     Group,
+    Identity,
+    IdentityProvider,
+    Integration,
     Project,
     Rule,
 )
-from sentry.utils import json
+from sentry.utils import json, jwt
 from sentry.utils.audit import create_audit_entry
 from sentry.utils.compat import filter
 from sentry.utils.signing import sign
 from sentry.web.decorators import transaction_start
 
 from .card_builder import (
-    build_welcome_card,
-    build_linking_card,
+    build_already_linked_identity_command_card,
     build_group_card,
-    build_personal_installation_message,
-    build_mentioned_card,
-    build_unlink_identity_card,
-    build_unrecognized_command_card,
     build_help_command_card,
     build_link_identity_command_card,
-    build_already_linked_identity_command_card,
+    build_linking_card,
+    build_mentioned_card,
+    build_personal_installation_message,
+    build_unlink_identity_card,
+    build_unrecognized_command_card,
+    build_welcome_card,
 )
-from .client import (
-    MsTeamsJwtClient,
-    MsTeamsClient,
-    CLOCK_SKEW,
-)
+from .client import CLOCK_SKEW, MsTeamsClient, MsTeamsJwtClient
 from .link_identity import build_linking_url
 from .unlink_identity import build_unlinking_url
 from .utils import ACTION_TYPE, get_preinstall_client
-
 
 logger = logging.getLogger("sentry.integrations.msteams.webhooks")
 
@@ -88,7 +82,7 @@ def verify_signature(request):
         raise NotAuthenticated("Authorization header required")
 
     try:
-        jwt.decode(token, verify=False)
+        jwt.peek_claims(token)
     except jwt.DecodeError:
         logger.error("msteams.webhook.invalid-token-no-verify")
         raise AuthenticationFailed("Could not decode JWT token")
@@ -103,9 +97,9 @@ def verify_signature(request):
     public_keys = {}
     for jwk in jwks["keys"]:
         kid = jwk["kid"]
-        public_keys[kid] = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
+        public_keys[kid] = jwt.rsa_key_from_jwk(json.dumps(jwk))
 
-    kid = jwt.get_unverified_header(token)["kid"]
+    kid = jwt.peek_header(token)["kid"]
     key = public_keys[kid]
 
     try:

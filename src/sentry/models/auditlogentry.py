@@ -2,14 +2,13 @@ from django.db import models
 from django.utils import timezone
 
 from sentry.db.models import (
-    Model,
     BoundedPositiveIntegerField,
     FlexibleForeignKey,
     GzippedDictField,
+    Model,
     sane_repr,
 )
 from sentry.utils.strings import truncatechars
-
 
 MAX_ACTOR_LABEL_LENGTH = 64
 
@@ -100,7 +99,7 @@ class AuditLogEntryEvent:
 
 
 class AuditLogEntry(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     organization = FlexibleForeignKey("sentry.Organization")
     actor_label = models.CharField(max_length=MAX_ACTOR_LABEL_LENGTH, null=True, blank=True)
@@ -196,6 +195,7 @@ class AuditLogEntry(Model):
     class Meta:
         app_label = "sentry"
         db_table = "sentry_auditlogentry"
+        indexes = [models.Index(fields=["organization", "datetime"])]
 
     __repr__ = sane_repr("organization_id", "type")
 
@@ -279,7 +279,7 @@ class AuditLogEntry(Model):
             return "created project {}".format(self.data["slug"])
         elif self.event == AuditLogEntryEvent.PROJECT_EDIT:
             return "edited project settings " + (
-                " ".join([f" in {key} to {value}" for (key, value) in self.data.items()])
+                " ".join(f" in {key} to {value}" for (key, value) in self.data.items())
             )
         elif self.event == AuditLogEntryEvent.PROJECT_REMOVE:
             return "removed project {}".format(self.data["slug"])

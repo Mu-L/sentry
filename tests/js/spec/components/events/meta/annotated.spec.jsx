@@ -1,6 +1,4 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import Annotated from 'app/components/events/meta/annotated';
 import {withMeta} from 'app/components/events/meta/metaProxy';
@@ -31,7 +29,7 @@ describe('Annotated', () => {
       const obj = {
         value: 'foo',
       };
-      mount(
+      mountWithTheme(
         <Annotated object={obj} objectKey="value">
           {mock}
         </Annotated>
@@ -47,14 +45,14 @@ describe('Annotated', () => {
       const obj = {
         value: 'foo',
       };
-      mount(<Annotated object={obj} objectKey="invalid" />);
+      mountWithTheme(<Annotated object={obj} objectKey="invalid" />);
     });
 
     it('renders a number', () => {
       const obj = {
         value: 0,
       };
-      mount(
+      mountWithTheme(
         <Annotated object={obj} objectKey="value">
           {mock}
         </Annotated>
@@ -70,7 +68,7 @@ describe('Annotated', () => {
       const obj = {
         value: false,
       };
-      mount(
+      mountWithTheme(
         <Annotated object={obj} objectKey="value">
           {mock}
         </Annotated>
@@ -95,7 +93,7 @@ describe('Annotated', () => {
           },
         },
       });
-      mount(
+      mountWithTheme(
         <Annotated object={obj} objectKey="value">
           {mock}
         </Annotated>
@@ -110,7 +108,7 @@ describe('Annotated', () => {
     it('does not call render prop if required and value is falsy and no meta', () => {
       const obj = createEvent(null, {});
 
-      mount(
+      mountWithTheme(
         <Annotated object={obj} objectKey="value" required>
           {mock}
         </Annotated>
@@ -125,7 +123,7 @@ describe('Annotated', () => {
       const meta = {err: ['something']};
       const obj = createEvent('foo', meta);
 
-      mount(
+      mountWithTheme(
         <Annotated object={obj} objectKey="value">
           {mock}
         </Annotated>
@@ -147,7 +145,7 @@ describe('Annotated', () => {
       const meta = {rem: [{type: 't'}], chunks: [{text: 'foo'}]};
       const obj = createEvent('foo', meta);
 
-      mount(
+      mountWithTheme(
         <Annotated object={obj} objectKey="value">
           {mock}
         </Annotated>
@@ -168,7 +166,7 @@ describe('Annotated', () => {
       const meta = {err: ['something']};
       const obj = createEvent(null, meta);
 
-      mount(
+      mountWithTheme(
         <Annotated object={obj} objectKey="value">
           {mock}
         </Annotated>

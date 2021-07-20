@@ -1,9 +1,8 @@
 from sentry import http
+from sentry.integrations import FeatureDescription, IntegrationFeatures
 from sentry.plugins.bases.data_forwarding import DataForwardingPlugin
-
 from sentry_plugins.base import CorePluginMixin
 from sentry_plugins.utils import get_secret_field_config
-from sentry.integrations import FeatureDescription, IntegrationFeatures
 
 DESCRIPTION = """
 Send Sentry events to Segment. This integration allows you to collect all your client-side data
@@ -145,5 +144,5 @@ class SegmentPlugin(CorePluginMixin, DataForwardingPlugin):
         if not write_key:
             return
 
-        session = http.build_session()
-        session.post(self.endpoint, json=payload, auth=(write_key, ""))
+        with http.build_session() as session:
+            session.post(self.endpoint, json=payload, auth=(write_key, ""))

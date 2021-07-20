@@ -1,15 +1,14 @@
 import datetime
-
 from decimal import Decimal
 
-from django.core.exceptions import ValidationError
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models.lookups import Exact, IExact, In, Contains, IContains
+from django.db.models.lookups import Contains, Exact, IContains, IExact, In
 from django.utils.translation import ugettext_lazy as _
 
-from sentry.utils import json
 from sentry.db.models.utils import Creator
+from sentry.utils import json
 
 
 def default(o):
@@ -68,7 +67,7 @@ class JSONField(models.TextField):
             raise ValidationError(self.error_messages["null"])
         try:
             self.get_prep_value(value)
-        except BaseException:
+        except Exception:
             raise ValidationError(self.error_messages["invalid"] % value)
 
     def get_default(self):
@@ -113,7 +112,7 @@ class JSONField(models.TextField):
         return json.dumps(value, default=default, **self.encoder_kwargs)
 
     def value_to_string(self, obj):
-        return self._get_val_from_obj(obj)
+        return self.value_from_object(obj)
 
 
 class NoPrepareMixin:

@@ -1,41 +1,46 @@
 import logging
+import math
+import time
+from datetime import timedelta
 from itertools import chain
 from uuid import uuid4
 
-from datetime import timedelta
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from sentry_relay.processing import validate_sampling_condition, validate_sampling_configuration
 
 from sentry import features
-from sentry.ingest.inbound_filters import FilterTypes
 from sentry.api.bases.project import ProjectEndpoint, ProjectPermission
 from sentry.api.decorators import sudo_required
 from sentry.api.fields.empty_integer import EmptyIntegerField
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models.project import DetailedProjectSerializer
-from sentry.api.serializers.rest_framework.list import EmptyListField
-from sentry.api.serializers.rest_framework.list import ListField
+from sentry.api.serializers.rest_framework.list import EmptyListField, ListField
 from sentry.api.serializers.rest_framework.origin import OriginField
 from sentry.constants import RESERVED_PROJECT_SLUGS
 from sentry.datascrubbing import validate_pii_config_update
-from sentry.lang.native.symbolicator import parse_sources, InvalidSourcesError
+from sentry.grouping.enhancer import Enhancements, InvalidEnhancerConfig
+from sentry.grouping.fingerprinting import FingerprintingRules, InvalidFingerprintingConfig
+from sentry.ingest.inbound_filters import FilterTypes
+from sentry.lang.native.symbolicator import InvalidSourcesError, parse_sources
 from sentry.lang.native.utils import convert_crashreport_count
 from sentry.models import (
     AuditLogEntryEvent,
     Group,
     GroupStatus,
+    NotificationSetting,
     Project,
     ProjectBookmark,
     ProjectRedirect,
     ProjectStatus,
     ProjectTeam,
-    UserOption,
 )
-from sentry.grouping.enhancer import Enhancements, InvalidEnhancerConfig
-from sentry.grouping.fingerprinting import FingerprintingRules, InvalidFingerprintingConfig
+from sentry.notifications.types import NotificationSettingTypes
+from sentry.notifications.utils.legacy_mappings import get_option_value_from_boolean
 from sentry.tasks.deletion import delete_project
+from sentry.types.integrations import ExternalProviders
 from sentry.utils import json
 from sentry.utils.compat import filter
 
@@ -61,56 +66,16 @@ class DynamicSamplingConditionSerializer(serializers.Serializer):
         return data
 
     def validate(self, data):
-        """
-        Conditions are quite heterogeneous so we validate manually
-        This validation needs to evolve with the new types of conditions supported in
-        the dynamic-sampling conditions
-        """
         if data is None:
-            raise serializers.ValidationError("Invalid dynamic rule condition")
+            raise serializers.ValidationError("Invalid sampling rule condition")
 
-        op = data.get("op")
+        try:
+            condition_string = json.dumps(data)
+            validate_sampling_condition(condition_string)
 
-        if op in ["and", "or", "not"]:
-            inner = data.get("inner")
-            if inner is None:
-                raise serializers.ValidationError(
-                    f"Missing inner field from  rule condition '{op}' "
-                )
-            if op == "not":
-                self.validate(inner)
-            else:
-                for child in inner:
-                    self.validate(child)
-        elif op == "eq":
-            for key in data.keys():
-                if key not in ["op", "name", "value", "ignoreCase"]:
-                    raise serializers.ValidationError(f"Invalid filed {key} for eq condition")
-            name = data.get("name")
-            if type(name) not in (str,):
-                raise serializers.ValidationError(
-                    "Invalid field value {} for name, expected string", format(name)
-                )
-            ignore_case = data.get("ignoreCase", False)
-            if type(ignore_case) != bool:
-                raise serializers.ValidationError(
-                    "Invalid field value {} for ignoreCase, expected bool", format(name)
-                )
-            if data.get("value") is None:
-                raise serializers.ValidationError("Missing field 'value'")
-        elif op == "glob":
-            for key in data.keys():
-                if key not in ["op", "name", "value", "ignoreCase"]:
-                    raise serializers.ValidationError(f"Invalid filed {key} for eq condition")
-            name = data.get("name")
-            if type(name) not in (str,):
-                raise serializers.ValidationError(
-                    "Invalid field value {} for name, expected string", format(name)
-                )
-            if data.get("value") is None:
-                raise serializers.ValidationError("Missing field 'value'")
-        else:
-            raise serializers.ValidationError(f"Invalid dynamic rule condition operator:'{op}'")
+        except ValueError as err:
+            reason = err.args[0] if len(err.args) > 0 else "invalid condition"
+            raise serializers.ValidationError(reason)
 
         return data
 
@@ -122,10 +87,28 @@ class DynamicSamplingRuleSerializer(serializers.Serializer):
         required=True,
     )
     condition = DynamicSamplingConditionSerializer()
+    id = serializers.IntegerField(min_value=0, required=False)
 
 
 class DynamicSamplingSerializer(serializers.Serializer):
     rules = serializers.ListSerializer(child=DynamicSamplingRuleSerializer())
+    next_id = serializers.IntegerField(min_value=0, required=False)
+
+    def validate(self, data):
+        """
+        Additional validation using sentry-relay to make sure that
+        the config is kept in sync with Relay
+        :param data: the input data
+        :return: the validated data or raise in case of error
+        """
+        try:
+            config_str = json.dumps(data)
+            validate_sampling_configuration(config_str)
+        except ValueError as err:
+            reason = err.args[0] if len(err.args) > 0 else "invalid configuration"
+            raise serializers.ValidationError(reason)
+
+        return data
 
 
 class ProjectMemberSerializer(serializers.Serializer):
@@ -163,10 +146,11 @@ class ProjectAdminSerializer(ProjectMemberSerializer):
     scrubIPAddresses = serializers.BooleanField(required=False)
     groupingConfig = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     groupingEnhancements = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    groupingEnhancementsBase = serializers.CharField(
+    fingerprintingRules = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    secondaryGroupingConfig = serializers.CharField(
         required=False, allow_blank=True, allow_null=True
     )
-    fingerprintingRules = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    secondaryGroupingExpiry = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     scrapeJavaScript = serializers.BooleanField(required=False)
     allowedDomains = EmptyListField(child=OriginField(allow_blank=True), required=False)
     resolveAge = EmptyIntegerField(required=False, allow_null=True)
@@ -268,6 +252,18 @@ class ProjectAdminSerializer(ProjectMemberSerializer):
             Enhancements.from_config_string(value)
         except InvalidEnhancerConfig as e:
             raise serializers.ValidationError(str(e))
+
+        return value
+
+    def validate_secondaryGroupingExpiry(self, value):
+        if not isinstance(value, (int, float)) or math.isnan(value):
+            raise serializers.ValidationError(
+                f"Grouping expiry must be a numerical value, a UNIX timestamp with second resolution, found {type(value)}"
+            )
+        if not (0 < value - time.time() < (91 * 24 * 3600)):
+            raise serializers.ValidationError(
+                "Grouping expiry must be sometime within the next 90 days and not in the past. Perhaps you specified the timestamp not in seconds?"
+            )
 
         return value
 
@@ -482,16 +478,24 @@ class ProjectDetailsEndpoint(ProjectEndpoint):
                 changed_proj_settings["sentry:grouping_enhancements"] = result[
                     "groupingEnhancements"
                 ]
-        if result.get("groupingEnhancementsBase") is not None:
-            if project.update_option(
-                "sentry:grouping_enhancements_base", result["groupingEnhancementsBase"]
-            ):
-                changed_proj_settings["sentry:grouping_enhancements_base"] = result[
-                    "groupingEnhancementsBase"
-                ]
         if result.get("fingerprintingRules") is not None:
             if project.update_option("sentry:fingerprinting_rules", result["fingerprintingRules"]):
                 changed_proj_settings["sentry:fingerprinting_rules"] = result["fingerprintingRules"]
+        if result.get("secondaryGroupingConfig") is not None:
+            if project.update_option(
+                "sentry:secondary_grouping_config", result["secondaryGroupingConfig"]
+            ):
+                changed_proj_settings["sentry:secondary_grouping_config"] = result[
+                    "secondaryGroupingConfig"
+                ]
+
+        if result.get("secondaryGroupingExpiry") is not None:
+            if project.update_option(
+                "sentry:secondary_grouping_expiry", result["secondaryGroupingExpiry"]
+            ):
+                changed_proj_settings["sentry:secondary_grouping_expiry"] = result[
+                    "secondaryGroupingExpiry"
+                ]
         if result.get("securityToken") is not None:
             if project.update_option("sentry:token", result["securityToken"]):
                 changed_proj_settings["sentry:token"] = result["securityToken"]
@@ -554,17 +558,19 @@ class ProjectDetailsEndpoint(ProjectEndpoint):
             if project.update_option("sentry:origins", result["allowedDomains"]):
                 changed_proj_settings["sentry:origins"] = result["allowedDomains"]
 
-        if result.get("isSubscribed"):
-            UserOption.objects.set_value(
-                user=request.user, key="mail:alert", value=1, project=project
-            )
-        elif result.get("isSubscribed") is False:
-            UserOption.objects.set_value(
-                user=request.user, key="mail:alert", value=0, project=project
+        if "isSubscribed" in result:
+            NotificationSetting.objects.update_settings(
+                ExternalProviders.EMAIL,
+                NotificationSettingTypes.ISSUE_ALERTS,
+                get_option_value_from_boolean(result.get("isSubscribed")),
+                user=request.user,
+                project=project,
             )
 
         if "dynamicSampling" in result:
-            project.update_option("sentry:dynamic_sampling", result["dynamicSampling"])
+            raw_dynamic_sampling = result["dynamicSampling"]
+            fixed_rules = self._fix_rule_ids(project, raw_dynamic_sampling)
+            project.update_option("sentry:dynamic_sampling", fixed_rules)
 
         # TODO(dcramer): rewrite options to use standard API config
         if has_project_write:
@@ -737,3 +743,45 @@ class ProjectDetailsEndpoint(ProjectEndpoint):
             project.rename_on_pending_deletion()
 
         return Response(status=204)
+
+    def _fix_rule_ids(self, project, raw_dynamic_sampling):
+        """
+        Fixes rule ids in sampling configuration
+
+        When rules are changed or new rules are introduced they will get
+        new ids
+        :pparam raw_dynamic_sampling: the dynamic sampling config coming from UI
+            validated but without adjusted rule ids
+        :return: the dynamic sampling config with the rule ids adjusted to be
+        unique and with the next_id updated
+        """
+        # get the existing configuration for comparison.
+        original = project.get_option("sentry:dynamic_sampling")
+        original_rules = []
+
+        if original is None:
+            next_id = 1
+        else:
+            next_id = original.get("next_id", 1)
+            original_rules = original.get("rules", [])
+
+        # make a dictionary with the old rules to compare for changes
+        original_rules_dict = {rule["id"]: rule for rule in original_rules}
+
+        if raw_dynamic_sampling is not None:
+            rules = raw_dynamic_sampling.get("rules", [])
+            for rule in rules:
+                rid = rule.get("id", 0)
+                original_rule = original_rules_dict.get(rid)
+                if rid == 0 or original_rule is None:
+                    # a new or unknown rule give it a new id
+                    rule["id"] = next_id
+                    next_id += 1
+                else:
+                    if original_rule != rule:
+                        # something changed in this rule, give it a new id
+                        rule["id"] = next_id
+                        next_id += 1
+
+        raw_dynamic_sampling["next_id"] = next_id
+        return raw_dynamic_sampling

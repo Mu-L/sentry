@@ -1,52 +1,65 @@
-import math
-import sentry_sdk
 import logging
-
+import math
 from collections import namedtuple
 
+import sentry_sdk
+
 from sentry import options
-from sentry.api.event_search import (
+from sentry.discover.arithmetic import is_equation, resolve_equation_list, strip_equation
+from sentry.models import Group
+from sentry.models.transaction_threshold import ProjectTransactionThreshold
+from sentry.search.events.builder import QueryBuilder
+from sentry.search.events.constants import CONFIGURABLE_AGGREGATES, DEFAULT_PROJECT_THRESHOLD
+from sentry.search.events.fields import (
     FIELD_ALIASES,
-    get_filter,
+    InvalidSearchQuery,
     get_function_alias,
     get_json_meta_type,
     is_function,
-    InvalidSearchQuery,
     resolve_field_list,
 )
-
-from sentry.models import Group
+from sentry.search.events.filter import get_filter
 from sentry.tagstore.base import TOP_VALUES_DEFAULT_LIMIT
 from sentry.utils.compat import filter
-from sentry.utils.math import nice_int
+from sentry.utils.math import mean, nice_int
 from sentry.utils.snuba import (
-    Dataset,
-    get_measurement_name,
-    naiveify_datetime,
-    raw_query,
-    resolve_snuba_aliases,
-    resolve_column,
     SNUBA_AND,
     SNUBA_OR,
+    Dataset,
     SnubaTSResult,
+    get_array_column_alias,
+    get_array_column_field,
+    get_measurement_name,
+    get_span_op_breakdown_name,
+    is_measurement,
+    is_span_op_breakdown,
+    naiveify_datetime,
+    raw_query,
+    raw_snql_query,
+    resolve_column,
+    resolve_snuba_aliases,
     to_naive_timestamp,
 )
 
 __all__ = (
     "PaginationResult",
     "InvalidSearchQuery",
+    "wip_snql_query",
     "query",
+    "prepare_discover_query",
     "timeseries_query",
     "top_events_timeseries",
     "get_facets",
     "transform_data",
     "zerofill",
     "histogram_query",
+    "check_multihistogram_fields",
 )
 
 
 logger = logging.getLogger(__name__)
 
+PreparedQuery = namedtuple("query", ["filter", "columns", "fields"])
 PaginationResult = namedtuple("PaginationResult", ["next", "previous", "oldest", "latest"])
 FacetResult = namedtuple("FacetResult", ["key", "value", "count"])
 
@@ -105,10 +118,8 @@ def zerofill(data, start, end, rollup, orderby):
     return rv
 
 
-def transform_results(
-    results, function_alias_map, translated_columns, snuba_filter, selected_columns=None
-):
-    results = transform_data(results, translated_columns, snuba_filter, selected_columns)
+def transform_results(results, function_alias_map, translated_columns, snuba_filter):
+    results = transform_data(results, translated_columns, snuba_filter)
     results["meta"] = transform_meta(results, function_alias_map)
     return results
 
@@ -128,16 +139,13 @@ def transform_meta(results, function_alias_map):
     return meta
 
 
-def transform_data(result, translated_columns, snuba_filter, selected_columns=None):
+def transform_data(result, translated_columns, snuba_filter):
     """
     Transform internal names back to the public schema ones.
 
     When getting timeseries results via rollup, this function will
     zerofill the output results.
     """
-    if selected_columns is None:
-        selected_columns = []
-
     for col in result["meta"]:
         # Translate back column names that were converted to snuba format
         col["name"] = translated_columns.get(col["name"], col["name"])
@@ -145,14 +153,18 @@ def transform_data(result, translated_columns, snuba_filter, selected_columns=No
     def get_row(row):
         transformed = {}
         for key, value in row.items():
-            if isinstance(value, float) and math.isnan(value):
-                value = 0
+            if isinstance(value, float):
+                # 0 for nan, and none for inf were chosen arbitrarily, nan and inf are invalid json
+                # so needed to pick something valid to use instead
+                if math.isnan(value):
+                    value = 0
+                elif math.isinf(value):
+                    value = None
             transformed[translated_columns.get(key, key)] = value
 
         return transformed
 
-    if len(translated_columns):
-        result["data"] = [get_row(row) for row in result["data"]]
+    result["data"] = [get_row(row) for row in result["data"]]
 
     rollup = snuba_filter.rollup
     if rollup and rollup > 0:
@@ -167,10 +179,36 @@ def transform_data(result, translated_columns, snuba_filter, selected_columns=No
     return result
 
 
+def wip_snql_query(
+    selected_columns,
+    query,
+    params,
+    equations=None,
+    orderby=None,
+    offset=None,
+    limit=50,
+    referrer=None,
+    auto_fields=False,
+    auto_aggregations=False,
+    use_aggregate_conditions=False,
+    conditions=None,
+    functions_acl=None,
+):
+    """
+    Replacement API for query using snql, this function is still a work in
+    progress and is not ready for use in production
+    """
+    builder = QueryBuilder(Dataset.Discover, params, query, selected_columns, orderby, limit)
+    snql_query = builder.get_snql_query()
+    results = raw_snql_query(snql_query, referrer)
+    return results
+
+
 def query(
     selected_columns,
     query,
     params,
+    equations=None,
     orderby=None,
     offset=None,
     limit=50,
@@ -194,6 +232,7 @@ def query(
     selected_columns (Sequence[str]) List of public aliases to fetch.
     query (str) Filter query string to create conditions from.
     params (Dict[str, str]) Filtering parameters with start, end, project_id, environment
+    equations (Sequence[str]) List of equations to calculate for the query
     orderby (None|str|Sequence[str]) The field to order results by.
     offset (None|int) The record offset to read.
     limit (int) The number of records to fetch.
@@ -211,6 +250,61 @@ def query(
     # We clobber this value throughout this code, so copy the value
     selected_columns = selected_columns[:]
 
+    snuba_query = prepare_discover_query(
+        selected_columns,
+        query,
+        params,
+        equations,
+        orderby,
+        auto_fields,
+        auto_aggregations,
+        use_aggregate_conditions,
+        conditions,
+        functions_acl,
+    )
+    snuba_filter = snuba_query.filter
+
+    with sentry_sdk.start_span(op="discover.discover", description="query.snuba_query"):
+        result = raw_query(
+            start=snuba_filter.start,
+            end=snuba_filter.end,
+            groupby=snuba_filter.groupby,
+            conditions=snuba_filter.conditions,
+            aggregations=snuba_filter.aggregations,
+            selected_columns=snuba_filter.selected_columns,
+            filter_keys=snuba_filter.filter_keys,
+            having=snuba_filter.having,
+            orderby=snuba_filter.orderby,
+            dataset=Dataset.Discover,
+            limit=limit,
+            offset=offset,
+            referrer=referrer,
+        )
+
+    with sentry_sdk.start_span(
+        op="discover.discover", description="query.transform_results"
+    ) as span:
+        span.set_data("result_count", len(result.get("data", [])))
+        return transform_results(
+            result,
+            snuba_query.fields["functions"],
+            snuba_query.columns,
+            snuba_filter,
+        )
+
+
+def prepare_discover_query(
+    selected_columns,
+    query,
+    params,
+    equations=None,
+    orderby=None,
+    auto_fields=False,
+    auto_aggregations=False,
+    use_aggregate_conditions=False,
+    conditions=None,
+    functions_acl=None,
+):
     with sentry_sdk.start_span(
         op="discover.discover", description="query.filter_transform"
     ) as span:
@@ -223,9 +317,12 @@ def query(
             ), "Auto aggregations cannot be used without enabling aggregate conditions"
             snuba_filter.having = []
 
-    function_translations = {}
-
     with sentry_sdk.start_span(op="discover.discover", description="query.field_translations"):
+        if equations is not None:
+            resolved_equations, _ = resolve_equation_list(equations, selected_columns)
+        else:
+            resolved_equations = []
+
         if orderby is not None:
             orderby = list(orderby) if isinstance(orderby, (list, tuple)) else [orderby]
             snuba_filter.orderby = [get_function_alias(o) for o in orderby]
@@ -236,14 +333,13 @@ def query(
             auto_fields=auto_fields,
             auto_aggregations=auto_aggregations,
             functions_acl=functions_acl,
+            resolved_equations=resolved_equations,
         )
 
         snuba_filter.update_with(resolved_fields)
 
         # Resolve the public aliases into the discover dataset names.
-        snuba_filter, translated_columns = resolve_discover_aliases(
-            snuba_filter, function_translations
-        )
+        snuba_filter, translated_columns = resolve_discover_aliases(snuba_filter)
 
         # Make sure that any aggregate conditions are also in the selected columns
         for having_clause in snuba_filter.having:
@@ -290,48 +386,70 @@ def query(
         if conditions is not None:
             snuba_filter.conditions.extend(conditions)
 
-    with sentry_sdk.start_span(op="discover.discover", description="query.snuba_query"):
-        result = raw_query(
-            start=snuba_filter.start,
-            end=snuba_filter.end,
-            groupby=snuba_filter.groupby,
-            conditions=snuba_filter.conditions,
-            aggregations=snuba_filter.aggregations,
-            selected_columns=snuba_filter.selected_columns,
-            filter_keys=snuba_filter.filter_keys,
-            having=snuba_filter.having,
-            orderby=snuba_filter.orderby,
-            dataset=Dataset.Discover,
-            limit=limit,
-            offset=offset,
-            referrer=referrer,
-        )
-
-    with sentry_sdk.start_span(
-        op="discover.discover", description="query.transform_results"
-    ) as span:
-        span.set_data("result_count", len(result.get("data", [])))
-        return transform_results(
-            result, resolved_fields["functions"], translated_columns, snuba_filter, selected_columns
-        )
+    return PreparedQuery(snuba_filter, translated_columns, resolved_fields)
 
 
-def get_timeseries_snuba_filter(selected_columns, query, params, rollup, default_count=True):
+def get_timeseries_snuba_filter(selected_columns, query, params):
     snuba_filter = get_filter(query, params)
     if not snuba_filter.start and not snuba_filter.end:
         raise InvalidSearchQuery("Cannot get timeseries result without a start and end.")
 
-    snuba_filter.update_with(resolve_field_list(selected_columns, snuba_filter, auto_fields=False))
+    columns = []
+    equations = []
+
+    for column in selected_columns:
+        if is_equation(column):
+            equations.append(strip_equation(column))
+        else:
+            columns.append(column)
+
+    if len(equations) > 0:
+        resolved_equations, updated_columns = resolve_equation_list(
+            equations, columns, aggregates_only=True, auto_add=True
+        )
+    else:
+        resolved_equations = []
+        updated_columns = columns
+
+    # For the new apdex, we need to add project threshold config as a selected
+    # column which means the group by for the time series won't work.
+    # As a temporary solution, we will calculate the mean of all the project
+    # level thresholds in the request and use the legacy apdex, user_misery
+    # or count_miserable calculation.
+    # TODO(snql): Alias the project_threshold_config column so it doesn't
+    # have to be in the SELECT statement and group by to be able to use new apdex,
+    # user_misery and count_miserable.
+    threshold = None
+    for agg in CONFIGURABLE_AGGREGATES:
+        if agg not in updated_columns:
+            continue
+
+        if threshold is None:
+            project_ids = params.get("project_id")
+            threshold_configs = list(
+                ProjectTransactionThreshold.objects.filter(
+                    organization_id=params["organization_id"],
+                    project_id__in=project_ids,
+                ).values_list("threshold", flat=True)
+            )
+
+            projects_without_threshold = len(project_ids) - len(threshold_configs)
+            threshold_configs.extend([DEFAULT_PROJECT_THRESHOLD] * projects_without_threshold)
+            threshold = int(mean(threshold_configs))
+
+        updated_columns.remove(agg)
+        updated_columns.append(CONFIGURABLE_AGGREGATES[agg].format(threshold=threshold))
+
+    snuba_filter.update_with(
+        resolve_field_list(
+            updated_columns, snuba_filter, auto_fields=False, resolved_equations=resolved_equations
+        )
+    )
 
     # Resolve the public aliases into the discover dataset names.
     snuba_filter, translated_columns = resolve_discover_aliases(snuba_filter)
     if not snuba_filter.aggregations:
         raise InvalidSearchQuery("Cannot get timeseries result with no aggregation.")
-
-    # Change the alias of the first aggregation to count. This ensures compatibility
-    # with other parts of the timeseries endpoint expectations
-    if len(snuba_filter.aggregations) == 1 and default_count:
-        snuba_filter.aggregations[0][2] = "count"
 
     return snuba_filter, translated_columns
 
@@ -360,10 +478,19 @@ def timeseries_query(selected_columns, query, params, rollup, referrer=None):
         op="discover.discover", description="timeseries.filter_transform"
     ) as span:
         span.set_data("query", query)
-        snuba_filter, _ = get_timeseries_snuba_filter(selected_columns, query, params, rollup)
+        snuba_filter, _ = get_timeseries_snuba_filter(selected_columns, query, params)
 
     with sentry_sdk.start_span(op="discover.discover", description="timeseries.snuba_query"):
         result = raw_query(
+            # Hack cause equations on aggregates have to go in selected columns instead of aggregations
+            selected_columns=[
+                column
+                for column in snuba_filter.selected_columns
+                # Check that the column is a list with 3 items, and the alias in the third item is an equation
+                if isinstance(column, list)
+                and len(column) == 3
+                and column[-1].startswith("equation[")
+            ],
             aggregations=snuba_filter.aggregations,
             conditions=snuba_filter.conditions,
             filter_keys=snuba_filter.filter_keys,
@@ -411,6 +538,7 @@ def top_events_timeseries(
     rollup,
     limit,
     organization,
+    equations=None,
     referrer=None,
     top_events=None,
     allow_empty=True,
@@ -443,6 +571,7 @@ def top_events_timeseries(
                 selected_columns,
                 query=user_query,
                 params=params,
+                equations=equations,
                 orderby=orderby,
                 limit=limit,
                 referrer=referrer,
@@ -455,16 +584,15 @@ def top_events_timeseries(
     ) as span:
         span.set_data("query", user_query)
         snuba_filter, translated_columns = get_timeseries_snuba_filter(
-            list(set(timeseries_columns + selected_columns)),
+            list(sorted(set(timeseries_columns + selected_columns))),
             user_query,
             params,
-            rollup,
-            default_count=False,
         )
 
         for field in selected_columns:
-            # project is handled by filter_keys already
-            if field in ["project", "project.id"]:
+            # If we have a project field, we need to limit results by project so we don't hit the result limit
+            if field in ["project", "project.id"] and top_events["data"]:
+                snuba_filter.project_ids = [event["project.id"] for event in top_events["data"]]
                 continue
             if field in FIELD_ALIASES:
                 field = FIELD_ALIASES[field].alias
@@ -477,9 +605,11 @@ def top_events_timeseries(
                 }
             )
             if values:
-                # timestamp needs special handling, creating a big OR instead
-                if field == "timestamp":
-                    snuba_filter.conditions.append([["timestamp", "=", value] for value in values])
+                # timestamp fields needs special handling, creating a big OR instead
+                if field == "timestamp" or field.startswith("timestamp.to_"):
+                    snuba_filter.conditions.append(
+                        [[field, "=", value] for value in sorted(values)]
+                    )
                 elif None in values:
                     non_none_values = [value for value in values if value is not None]
                     condition = [[["isNull", [resolve_discover_column(field)]], "=", 1]]
@@ -519,7 +649,7 @@ def top_events_timeseries(
         op="discover.discover", description="top_events.transform_results"
     ) as span:
         span.set_data("result_count", len(result.get("data", [])))
-        result = transform_data(result, translated_columns, snuba_filter, selected_columns)
+        result = transform_data(result, translated_columns, snuba_filter)
 
         if "project" in selected_columns:
             translated_columns["project_id"] = "project"
@@ -750,11 +880,18 @@ def histogram_query(
     max_value=None,
     data_filter=None,
     referrer=None,
+    group_by=None,
+    order_by=None,
+    limit_by=None,
+    extra_conditions=None,
+    normalize_results=True,
 ):
     """
     API for generating histograms for numeric columns.
 
-    A multihistogram is possible only if the columns are all measurements.
+    A multihistogram is possible only if the columns are all array columns.
+    Array columns are columns whose values are nested arrays.
+    Measurements and span op breakdowns are examples of array columns.
     The resulting histograms will have their bins aligned.
 
     :param [str] fields: The list of fields for which you want to generate histograms for.
@@ -767,6 +904,11 @@ def histogram_query(
     :param float max_value: The maximum value allowed to be in the histogram.
         If left unspecified, it is queried using `user_query` and `params`.
     :param str data_filter: Indicate the filter strategy to be applied to the data.
+    :param [str] group_by: Experimental. Allows additional grouping to serve multifacet histograms.
+    :param [str] order_by: Experimental. Allows additional ordering within each alias to serve multifacet histograms.
+    :param [str] limit_by: Experimental. Allows limiting within a group when serving multifacet histograms.
+    :param [str] extra_conditions: Adds any additional conditions to the histogram query that aren't received from params.
+    :param bool normalize_results: Indicate whether to normalize the results by column into bins.
     """
 
     multiplier = int(10 ** precision)
@@ -779,24 +921,37 @@ def histogram_query(
     )
 
     key_column = None
+    array_column = None
+    histogram_function = None
     conditions = []
     if len(fields) > 1:
-        key_column = "array_join(measurements_key)"
+        array_column = check_multihistogram_fields(fields)
+        if array_column == "measurements":
+            key_column = "array_join(measurements_key)"
+            histogram_function = get_measurement_name
+        elif array_column == "span_op_breakdowns":
+            key_column = "array_join(span_op_breakdowns_key)"
+            histogram_function = get_span_op_breakdown_name
+        else:
+            raise InvalidSearchQuery(
+                "multihistogram expected either all measurements or all breakdowns"
+            )
+
         key_alias = get_function_alias(key_column)
-        measurements = []
-        for f in fields:
-            measurement = get_measurement_name(f)
-            if measurement is None:
-                raise InvalidSearchQuery(f"multihistogram expected all measurements, received: {f}")
-            measurements.append(measurement)
-        conditions.append([key_alias, "IN", measurements])
+        field_names = [histogram_function(field) for field in fields]
+        conditions.append([key_alias, "IN", field_names])
+
+    if extra_conditions:
+        conditions.extend(extra_conditions)
 
     histogram_params = find_histogram_params(num_buckets, min_value, max_value, multiplier)
-    histogram_column = get_histogram_column(fields, key_column, histogram_params)
+    histogram_column = get_histogram_column(fields, key_column, histogram_params, array_column)
     histogram_alias = get_function_alias(histogram_column)
 
     if min_value is None or max_value is None:
-        return normalize_histogram_results(fields, key_column, histogram_params, {"data": []})
+        return normalize_histogram_results(
+            fields, key_column, histogram_params, {"data": []}, array_column
+        )
     # make sure to bound the bins to get the desired range of results
     if min_value is not None:
         min_bin = histogram_params.start_offset
@@ -806,37 +961,68 @@ def histogram_query(
         conditions.append([histogram_alias, "<=", max_bin])
 
     columns = [] if key_column is None else [key_column]
-    results = query(
+    limit = len(fields) * num_buckets
+
+    histogram_query = prepare_discover_query(
         selected_columns=columns + [histogram_column, "count()"],
         conditions=conditions,
         query=user_query,
         params=params,
-        orderby=[histogram_alias],
-        limit=len(fields) * num_buckets,
-        referrer=referrer,
+        orderby=(order_by if order_by else []) + [histogram_alias],
         functions_acl=["array_join", "histogram"],
     )
 
-    return normalize_histogram_results(fields, key_column, histogram_params, results)
+    snuba_filter = histogram_query.filter
+
+    if group_by:
+        snuba_filter.groupby += group_by
+
+    result = raw_query(
+        start=snuba_filter.start,
+        end=snuba_filter.end,
+        groupby=snuba_filter.groupby,
+        conditions=snuba_filter.conditions,
+        aggregations=snuba_filter.aggregations,
+        selected_columns=snuba_filter.selected_columns,
+        filter_keys=snuba_filter.filter_keys,
+        having=snuba_filter.having,
+        orderby=snuba_filter.orderby,
+        dataset=Dataset.Discover,
+        limitby=limit_by,
+        limit=limit,
+        referrer=referrer,
+    )
+
+    results = transform_results(
+        result,
+        histogram_query.fields["functions"],
+        histogram_query.columns,
+        snuba_filter,
+    )
+
+    if not normalize_results:
+        return results
+
+    return normalize_histogram_results(fields, key_column, histogram_params, results, array_column)
 
 
-def get_histogram_column(fields, key_column, histogram_params):
+def get_histogram_column(fields, key_column, histogram_params, array_column):
     """
     Generate the histogram column string.
 
     :param [str] fields: The list of fields for which you want to generate the histograms for.
     :param str key_column: The column for the key name. This is only set when generating a
-        multihistogram of measurement values. Otherwise, it should be `None`.
+        multihistogram of array values. Otherwise, it should be `None`.
     :param HistogramParms histogram_params: The histogram parameters used.
+    :param str array_column: Array column prefix
     """
-
-    field = fields[0] if key_column is None else "measurements_value"
+    field = fields[0] if key_column is None else f"{array_column}_value"
     return f"histogram({field}, {histogram_params.bucket_size:d}, {histogram_params.start_offset:d}, {histogram_params.multiplier:d})"
 
 
 def find_histogram_params(num_buckets, min_value, max_value, multiplier):
     """
-    Compute the parameters to use for measurements histogram. Using the provided
+    Compute the parameters to use for the histogram. Using the provided
     arguments, ensure that the generated histogram encapsolates the desired range.
 
     :param int num_buckets: The number of buckets the histogram should contain.
@@ -879,7 +1065,7 @@ def find_histogram_params(num_buckets, min_value, max_value, multiplier):
 
 def find_histogram_min_max(fields, min_value, max_value, user_query, params, data_filter=None):
     """
-    Find the min/max value of the specified measurements. If either min/max is already
+    Find the min/max value of the specified fields. If either min/max is already
     specified, it will be used and not queried for.
 
     :param [str] fields: The list of fields for which you want to generate the histograms for.
@@ -928,6 +1114,13 @@ def find_histogram_min_max(fields, min_value, max_value, user_query, params, dat
         min_values = [row[get_function_alias(column)] for column in min_columns]
         min_values = list(filter(lambda v: v is not None, min_values))
         min_value = min(min_values) if min_values else None
+        if max_value is not None and min_value is not None:
+            # max_value was provided by the user, and min_value was queried.
+            # If min_value > max_value, then we adjust min_value with respect to
+            # max_value. The rationale is that if the user provided max_value,
+            # then any and all data above max_value should be ignored since it is
+            # and upper bound.
+            min_value = min([max_value, min_value])
 
     if max_value is None:
         max_values = [row[get_function_alias(column)] for column in max_columns]
@@ -960,11 +1153,17 @@ def find_histogram_min_max(fields, min_value, max_value, user_query, params, dat
         candidates = [max_fence_value, max_value]
         candidates = list(filter(lambda v: v is not None, candidates))
         max_value = min(candidates) if candidates else None
+        if max_value is not None and min_value is not None:
+            # min_value may be either queried or provided by the user. max_value was queried.
+            # If min_value > max_value, then max_value should be adjusted with respect to
+            # min_value, since min_value is a lower bound, and any and all data below
+            # min_value should be ignored.
+            max_value = max([max_value, min_value])
 
     return min_value, max_value
 
 
-def normalize_histogram_results(fields, key_column, histogram_params, results):
+def normalize_histogram_results(fields, key_column, histogram_params, results, array_column):
     """
     Normalizes the histogram results by renaming the columns to key and bin
     and make sure to zerofill any missing values.
@@ -975,20 +1174,25 @@ def normalize_histogram_results(fields, key_column, histogram_params, results):
     :param HistogramParms histogram_params: The histogram parameters used.
     :param any results: The results from the histogram query that may be missing
         bins and needs to be normalized.
+    :param str array_column: Array column prefix
     """
 
     # `key_name` is only used when generating a multi histogram of measurement values.
     # It contains the name of the corresponding measurement for that row.
     key_name = None if key_column is None else get_function_alias(key_column)
-    histogram_column = get_histogram_column(fields, key_column, histogram_params)
+    histogram_column = get_histogram_column(fields, key_column, histogram_params, array_column)
     bin_name = get_function_alias(histogram_column)
 
     # zerofill and rename the columns while making sure to adjust for precision
     bucket_maps = {field: {} for field in fields}
     for row in results["data"]:
         # Fall back to the first field name if there is no `key_name`,
-        # otherwise, this is a measurement name and format it as such.
-        key = fields[0] if key_name is None else "measurements.{}".format(row[key_name])
+        # otherwise, this is an array value name and format it as such.
+        key = (
+            fields[0]
+            if key_name is None
+            else f"{get_array_column_alias(array_column)}.{get_array_column_field(array_column, row[key_name])}"
+        )
         # we expect the bin the be an integer, this is because all floating
         # point values are rounded during the calculation
         bucket = int(row[bin_name])
@@ -1010,3 +1214,27 @@ def normalize_histogram_results(fields, key_column, histogram_params, results):
             new_data[field].append(row)
 
     return new_data
+
+
+def check_multihistogram_fields(fields):
+    """
+    Returns multihistogram type if all the given fields are of the same histogram type.
+    Return false otherwise, or if any of the fields are not a compatible histogram type.
+    Possible histogram types: measurements, span_op_breakdowns
+
+    :param [str] fields: The list of fields for which you want to generate histograms for.
+    """
+    histogram_type = False
+    for field in fields:
+        if histogram_type is False:
+            if is_measurement(field):
+                histogram_type = "measurements"
+            elif is_span_op_breakdown(field):
+                histogram_type = "span_op_breakdowns"
+            else:
+                return False
+        elif histogram_type == "measurements" and not is_measurement(field):
+            return False
+        elif histogram_type == "span_op_breakdowns" and not is_span_op_breakdown(field):
+            return False
+    return histogram_type

@@ -1,26 +1,23 @@
 import functools
-import itertools
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import Iterable, Mapping, Optional, Tuple
 
 import pytz
-import logging
-
+import sentry_sdk
 from django.conf import settings
-from django.db.models import Min, Q
+from django.db.models import Min
 from django.utils import timezone
 
-import sentry_sdk
-
 from sentry import tagstore, tsdb
-from sentry.app import env
-from sentry.api.event_search import convert_search_filter_to_snuba_query
 from sentry.api.serializers import Serializer, register, serialize
 from sentry.api.serializers.models.actor import ActorSerializer
-from sentry.api.fields.actor import Actor
+from sentry.app import env
 from sentry.auth.superuser import is_active_superuser
 from sentry.constants import LOG_LEVELS, StatsPeriod
 from sentry.models import (
+    ActorTuple,
     ApiToken,
     Commit,
     Environment,
@@ -32,39 +29,42 @@ from sentry.models import (
     GroupMeta,
     GroupResolution,
     GroupSeen,
-    GroupSnooze,
     GroupShare,
+    GroupSnooze,
     GroupStatus,
     GroupSubscription,
-    GroupSubscriptionReason,
     Integration,
+    NotificationSetting,
     SentryAppInstallationToken,
     User,
-    UserOption,
-    UserOptionValue,
 )
 from sentry.models.groupinbox import get_inbox_details
 from sentry.models.groupowner import get_owner_details
+from sentry.notifications.helpers import (
+    collect_groups_by_project,
+    get_groups_for_query,
+    get_subscription_from_attributes,
+    get_user_subscriptions_for_groups,
+    transform_to_notification_settings_by_parent_id,
+)
+from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
+from sentry.reprocessing2 import get_progress
+from sentry.search.events.constants import (
+    RELEASE_STAGE_ALIAS,
+    SEMVER_ALIAS,
+    SEMVER_BUILD_ALIAS,
+    SEMVER_PACKAGE_ALIAS,
+)
+from sentry.search.events.filter import convert_search_filter_to_snuba_query
 from sentry.tagstore.snuba.backend import fix_tag_value_data
 from sentry.tsdb.snuba import SnubaTSDB
-from sentry.utils import snuba
+from sentry.types.integrations import ExternalProviders
+from sentry.utils import metrics
+from sentry.utils.cache import cache
+from sentry.utils.compat import zip
 from sentry.utils.db import attach_foreignkey
 from sentry.utils.safe import safe_execute
-from sentry.utils.compat import map, zip
-from sentry.utils.snuba import Dataset, raw_query
-from sentry.reprocessing2 import get_progress
-
-SUBSCRIPTION_REASON_MAP = {
-    GroupSubscriptionReason.comment: "commented",
-    GroupSubscriptionReason.assigned: "assigned",
-    GroupSubscriptionReason.bookmark: "bookmarked",
-    GroupSubscriptionReason.status_change: "changed_status",
-    GroupSubscriptionReason.mentioned: "mentioned",
-}
-
-
-disabled = object()
-
+from sentry.utils.snuba import Dataset, aliased_query, raw_query
 
 # TODO(jess): remove when snuba is primary backend
 snuba_tsdb = SnubaTSDB(**settings.SENTRY_TSDB_OPTIONS)
@@ -83,17 +83,12 @@ class GroupSerializerBase(Serializer):
         self,
         collapse=None,
         expand=None,
-        has_inbox=False,
     ):
         self.collapse = collapse
         self.expand = expand
-        self.has_inbox = has_inbox
 
     def _expand(self, key):
         if self.expand is None:
-            return False
-
-        if key == "inbox" and not self.has_inbox:
             return False
 
         return key in self.expand
@@ -135,114 +130,109 @@ class GroupSerializerBase(Serializer):
 
     def _get_group_snuba_stats(self, item_list, seen_stats):
         start = self._get_start_from_seen_stats(seen_stats)
+        unhandled = {}
+
+        cache_keys = []
+        for item in item_list:
+            cache_keys.append("group-mechanism-handled:%d" % item.id)
+
+        cache_data = cache.get_many(cache_keys)
+        for item, cache_key in zip(item_list, cache_keys):
+            unhandled[item.id] = cache_data.get(cache_key)
 
         filter_keys = {}
         for item in item_list:
+            if unhandled.get(item.id) is not None:
+                continue
             filter_keys.setdefault("project_id", []).append(item.project_id)
             filter_keys.setdefault("group_id", []).append(item.id)
 
-        rv = raw_query(
-            dataset=Dataset.Events,
-            selected_columns=[
-                "group_id",
-                [
-                    "argMax",
-                    [["has", ["exception_stacks.mechanism_handled", 0]], "timestamp"],
-                    "unhandled",
+        if filter_keys:
+            rv = raw_query(
+                dataset=Dataset.Events,
+                selected_columns=[
+                    "group_id",
+                    [
+                        "argMax",
+                        [["has", ["exception_stacks.mechanism_handled", 0]], "timestamp"],
+                        "unhandled",
+                    ],
                 ],
-            ],
-            groupby=["group_id"],
-            filter_keys=filter_keys,
-            start=start,
-            orderby="group_id",
-            referrer="group.unhandled-flag",
-        )
+                groupby=["group_id"],
+                filter_keys=filter_keys,
+                start=start,
+                orderby="group_id",
+                referrer="group.unhandled-flag",
+            )
+            for x in rv["data"]:
+                unhandled[x["group_id"]] = x["unhandled"]
 
-        return {x["group_id"]: {"unhandled": x["unhandled"]} for x in rv["data"]}
+                # cache the handled flag for 60 seconds.  This is broadly in line with
+                # the time we give for buffer flushes so the user experience is somewhat
+                # consistent here.
+                cache.set("group-mechanism-handled:%d" % x["group_id"], x["unhandled"], 60)
 
-    def _get_subscriptions(self, item_list, user):
+        return {group_id: {"unhandled": unhandled} for group_id, unhandled in unhandled.items()}
+
+    @staticmethod
+    def _get_subscriptions(
+        groups: Iterable[Group], user: User
+    ) -> Mapping[int, Tuple[bool, bool, Optional[GroupSubscription]]]:
         """
-        Returns a mapping of group IDs to a two-tuple of (subscribed: bool,
-        subscription: GroupSubscription or None) for the provided user and
-        groups.
+        Returns a mapping of group IDs to a two-tuple of (is_disabled: bool,
+        subscribed: bool, subscription: Optional[GroupSubscription]) for the
+        provided user and groups.
         """
-        if not item_list:
+        if not groups:
             return {}
 
-        # Collect all of the projects to look up, and keep a set of groups that
-        # are part of that project. (Note that the common -- but not only --
-        # case here is that all groups are part of the same project.)
-        projects = defaultdict(set)
-        for group in item_list:
-            projects[group.project].add(group)
+        groups_by_project = collect_groups_by_project(groups)
+        notification_settings = NotificationSetting.objects.get_for_user_by_projects(
+            NotificationSettingTypes.WORKFLOW,
+            user,
+            groups_by_project.keys(),
+        )
 
-        # Fetch the options for each project -- we'll need this to identify if
-        # a user has totally disabled workflow notifications for a project.
-        # NOTE: This doesn't use `values_list` because that bypasses field
-        # value decoding, so the `value` field would not be unpickled.
-        options = {
-            option.project_id: option.value
-            for option in UserOption.objects.filter(
-                Q(project__in=projects.keys()) | Q(project__isnull=True),
-                user=user,
-                key="workflow:notifications",
-            )
+        (
+            notification_settings_by_project_id_by_provider,
+            default_subscribe_by_provider,
+        ) = transform_to_notification_settings_by_parent_id(
+            notification_settings, NotificationSettingOptionValues.SUBSCRIBE_ONLY
+        )
+        notification_settings_by_key = notification_settings_by_project_id_by_provider[
+            ExternalProviders.EMAIL
+        ]
+        global_default_workflow_option = default_subscribe_by_provider[ExternalProviders.EMAIL]
+
+        query_groups = get_groups_for_query(
+            groups_by_project,
+            notification_settings_by_key,
+            global_default_workflow_option,
+        )
+        subscriptions = GroupSubscription.objects.filter(group__in=query_groups, user=user)
+        subscriptions_by_group_id = {
+            subscription.group_id: subscription for subscription in subscriptions
         }
 
-        # If there is a subscription record associated with the group, we can
-        # just use that to know if a user is subscribed or not, as long as
-        # notifications aren't disabled for the project.
-        subscriptions = {
-            subscription.group_id: subscription
-            for subscription in GroupSubscription.objects.filter(
-                group__in=list(
-                    itertools.chain.from_iterable(
-                        map(
-                            lambda project__groups: project__groups[1]
-                            if not options.get(project__groups[0].id, options.get(None))
-                            == UserOptionValue.no_conversations
-                            else [],
-                            projects.items(),
-                        )
-                    )
-                ),
-                user=user,
-            )
-        }
-
-        # This is the user's default value for any projects that don't have
-        # the option value specifically recorded. (The default
-        # "participating_only" value is convention.)
-        global_default_workflow_option = options.get(None, UserOptionValue.participating_only)
-
-        results = {}
-        for project, groups in projects.items():
-            project_default_workflow_option = options.get(
-                project.id, global_default_workflow_option
-            )
-            for group in groups:
-                subscription = subscriptions.get(group.id)
-                if subscription is not None:
-                    results[group.id] = (subscription.is_active, subscription)
-                else:
-                    results[group.id] = (
-                        (project_default_workflow_option == UserOptionValue.all_conversations, None)
-                        if project_default_workflow_option != UserOptionValue.no_conversations
-                        else disabled
-                    )
-
-        return results
+        return get_user_subscriptions_for_groups(
+            groups_by_project,
+            notification_settings_by_key,
+            subscriptions_by_group_id,
+            global_default_workflow_option,
+        )
 
     def get_attrs(self, item_list, user):
-        from sentry.plugins.base import plugins
         from sentry.integrations import IntegrationFeatures
         from sentry.models import PlatformExternalIssue
+        from sentry.plugins.base import plugins
 
         GroupMeta.objects.populate_cache(item_list)
 
-        attach_foreignkey(item_list, Group.project)
+        # Note that organization is necessary here for use in `_get_permalink` to avoid
+        # making unnecessary queries.
+        attach_foreignkey(item_list, Group.project, related=("organization",))
 
-        if user.is_authenticated() and item_list:
+        if user.is_authenticated and item_list:
             bookmarks = set(
                 GroupBookmark.objects.filter(user=user, group__in=item_list).values_list(
                     "group_id", flat=True
@@ -257,13 +247,13 @@ class GroupSerializerBase(Serializer):
         else:
             bookmarks = set()
             seen_groups = {}
-            subscriptions = defaultdict(lambda: (False, None))
+            subscriptions = defaultdict(lambda: (False, False, None))
 
         assignees = {
             a.group_id: a.assigned_actor()
             for a in GroupAssignee.objects.filter(group__in=item_list)
         }
-        resolved_assignees = Actor.resolve_dict(assignees)
+        resolved_assignees = ActorTuple.resolve_dict(assignees)
 
         ignore_items = {g.group_id: g for g in GroupSnooze.objects.filter(group__in=item_list)}
 
@@ -324,7 +314,7 @@ class GroupSerializerBase(Serializer):
             return {}
         if len(organization_id_list) > 1:
             # this should never happen but if it does we should know about it
-            logger.warn(
+            logger.warning(
                 "Found multiple organizations for groups: %s, with orgs: %s"
                 % ([item.id for item in item_list], organization_id_list)
             )
@@ -496,30 +486,17 @@ class GroupSerializerBase(Serializer):
         if (
             is_superuser
             or is_valid_sentryapp
-            or (user.is_authenticated() and user.get_orgs().filter(id=obj.organization.id).exists())
+            or (user.is_authenticated and user.get_orgs().filter(id=obj.organization.id).exists())
         ):
             with sentry_sdk.start_span(op="GroupSerializerBase.serialize.permalink.build"):
                 return obj.get_absolute_url()
         else:
             return None
 
-    def _get_subscription(self, attrs):
-        subscription_details = None
-        if attrs["subscription"] is not disabled:
-            is_subscribed, subscription = attrs["subscription"]
-            if subscription is not None and subscription.is_active:
-                subscription_details = {
-                    "reason": SUBSCRIPTION_REASON_MAP.get(subscription.reason, "unknown")
-                }
-        else:
-            is_subscribed = False
-            subscription_details = {"disabled": True}
-        return is_subscribed, subscription_details
-
     def serialize(self, obj, attrs, user):
         status_details, status_label = self._get_status(attrs, obj)
         permalink = self._get_permalink(obj, user)
-        is_subscribed, subscription_details = self._get_subscription(attrs)
+        is_subscribed, subscription_details = get_subscription_from_attributes(attrs)
         share_id = attrs["share_id"]
         group_dict = {
             "id": str(obj.id),
@@ -780,6 +757,17 @@ class GroupSerializerSnuba(GroupSerializerBase):
         "times_seen",
         "date",  # We merge this with start/end, so don't want to include it as its own
         # condition
+        # We don't need to filter by the semver query again here since we're
+        # filtering to specific groups. Saves us making a second query to
+        # postgres for no reason
+        # TODO: Above comment is wrong, we do need to filter by at least `SEMVER_ALIAS` and
+        # `SEMVER_BUILD_ALIAS` here since groups can appear across releases. Probably unnecessary
+        # for the `SEMVER_PACKAGE_ALIAS` though, since package tends to be tied to a specific
+        # project.
+        RELEASE_STAGE_ALIAS,
+        SEMVER_ALIAS,
+        SEMVER_PACKAGE_ALIAS,
+        SEMVER_BUILD_ALIAS,
     }
 
     def __init__(
@@ -790,13 +778,8 @@ class GroupSerializerSnuba(GroupSerializerBase):
         search_filters=None,
         collapse=None,
         expand=None,
-        has_inbox=False,
     ):
-        super().__init__(
-            collapse=collapse,
-            expand=expand,
-            has_inbox=has_inbox,
-        )
+        super().__init__(collapse=collapse, expand=expand)
         from sentry.search.snuba.executors import get_search_filter
 
         self.environment_ids = environment_ids
@@ -807,7 +790,7 @@ class GroupSerializerSnuba(GroupSerializerBase):
         self.start = None
         start_params = [_f for _f in [start, get_search_filter(search_filters, "date", ">")] if _f]
         if start_params:
-            self.start = max([_f for _f in start_params if _f])
+            self.start = max(_f for _f in start_params if _f)
 
         self.end = None
         end_params = [_f for _f in [end, get_search_filter(search_filters, "date", "<")] if _f]
@@ -838,8 +821,8 @@ class GroupSerializerSnuba(GroupSerializerBase):
         filters = {"project_id": project_ids, "group_id": group_ids}
         if self.environment_ids:
             filters["environment"] = self.environment_ids
-        result = snuba.aliased_query(
-            dataset=snuba.Dataset.Events,
+        result = aliased_query(
+            dataset=Dataset.Events,
             start=start,
             end=end,
             groupby=["group_id"],
@@ -882,6 +865,7 @@ class GroupSerializerSnuba(GroupSerializerBase):
                 "last_seen": last_seen.get(item.id),
                 "user_count": user_counts.get(item.id, 0),
             }
+
         return attrs
 
     def _get_seen_stats(self, item_list, user):
@@ -907,7 +891,6 @@ class StreamGroupSerializerSnuba(GroupSerializerSnuba, GroupStatsMixin):
         search_filters=None,
         collapse=None,
         expand=None,
-        has_inbox=False,
     ):
         super().__init__(
             environment_ids,
@@ -916,7 +899,6 @@ class StreamGroupSerializerSnuba(GroupSerializerSnuba, GroupStatsMixin):
             search_filters,
             collapse=collapse,
             expand=expand,
-            has_inbox=has_inbox,
         )
 
         if stats_period is not None:
@@ -997,6 +979,55 @@ class StreamGroupSerializerSnuba(GroupSerializerSnuba, GroupStatsMixin):
                     attrs[item].update({"filtered_stats": filtered_stats[item.id]})
                 attrs[item].update({"stats": stats[item.id]})
 
+            if self._expand("sessions"):
+                uniq_project_ids = list({item.project_id for item in item_list})
+                cache_keys = {pid: self._build_session_cache_key(pid) for pid in uniq_project_ids}
+                cache_data = cache.get_many(cache_keys.values())
+                missed_items = []
+                for item in item_list:
+                    num_sessions = cache_data.get(cache_keys[item.project_id])
+                    if num_sessions is None:
+                        found = "miss"
+                        missed_items.append(item)
+                    else:
+                        found = "hit"
+                        attrs[item].update(
+                            {
+                                "sessionCount": num_sessions,
+                            }
+                        )
+                    metrics.incr(f"group.get_session_counts.{found}")
+
+                if missed_items:
+                    filters = {"project_id": list({item.project_id for item in missed_items})}
+                    if self.environment_ids:
+                        filters["environment"] = self.environment_ids
+
+                    result_totals = raw_query(
+                        selected_columns=["sessions"],
+                        dataset=Dataset.Sessions,
+                        start=self.start,
+                        end=self.end,
+                        filter_keys=filters,
+                        groupby=["project_id"],
+                        referrer="serializers.GroupSerializerSnuba.session_totals",
+                    )
+                    results = {}
+                    for data in result_totals["data"]:
+                        cache_key = self._build_session_cache_key(data["project_id"])
+                        results[data["project_id"]] = data["sessions"]
+                        cache.set(cache_key, data["sessions"], 3600)
+
+                    for item in missed_items:
+                        if item.project_id in results.keys():
+                            attrs[item].update(
+                                {
+                                    "sessionCount": results[item.project_id],
+                                }
+                            )
+                        else:
+                            attrs[item].update({"sessionCount": None})
+
         if self._expand("inbox"):
             inbox_stats = get_inbox_details(item_list)
             for item in item_list:
@@ -1043,6 +1074,9 @@ class StreamGroupSerializerSnuba(GroupSerializerSnuba, GroupStatsMixin):
                 else:
                     result["filtered"] = None
 
+            if self._expand("sessions"):
+                result["sessionCount"] = attrs["sessionCount"]
+
         if self._expand("inbox"):
             result["inbox"] = attrs["inbox"]
 
@@ -1050,3 +1084,22 @@ class StreamGroupSerializerSnuba(GroupSerializerSnuba, GroupStatsMixin):
             result["owners"] = attrs["owners"]
 
         return result
+
+    def _build_session_cache_key(self, project_id):
+        session_count_key = f"w-s:{project_id}"
+
+        if self.start:
+            session_count_key = f"{session_count_key}-{self.start.replace(minute=0, second=0, microsecond=0, tzinfo=None)}".replace(
+                " ", ""
+            )
+
+        if self.end:
+            session_count_key = f"{session_count_key}-{self.end.replace(minute=0, second=0, microsecond=0, tzinfo=None)}".replace(
+                " ", ""
+            )
+
+        if self.environment_ids:
+            envs = "-".join(str(eid) for eid in self.environment_ids)
+            session_count_key = f"{session_count_key}-{envs}"
+
+        return session_count_key

@@ -6,7 +6,7 @@ from sentry.api.bases.monitor import MonitorEndpoint
 from sentry.api.fields.empty_integer import EmptyIntegerField
 from sentry.api.paginator import OffsetPaginator
 from sentry.api.serializers import serialize
-from sentry.models import Monitor, MonitorCheckIn, MonitorStatus, CheckInStatus, ProjectKey
+from sentry.models import CheckInStatus, Monitor, MonitorCheckIn, MonitorStatus, ProjectKey
 
 
 class CheckInSerializer(serializers.Serializer):
@@ -31,7 +31,7 @@ class MonitorCheckInsEndpoint(MonitorEndpoint):
         :pparam string monitor_id: the id of the monitor.
         :auth: required
         """
-        # we dont allow read permission with DSNs
+        # we don't allow read permission with DSNs
         if isinstance(request.auth, ProjectKey):
             return self.respond(status=401)
 
@@ -88,6 +88,6 @@ class MonitorCheckInsEndpoint(MonitorEndpoint):
                 ).update(**monitor_params)
 
         if isinstance(request.auth, ProjectKey):
-            return self.respond({"id": checkin.id}, status=201)
+            return self.respond({"id": str(checkin.guid)}, status=201)
 
         return self.respond(serialize(checkin, request.user), status=201)

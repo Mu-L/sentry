@@ -3,13 +3,13 @@ Used for notifying a *specific* plugin
 """
 
 import logging
+
 from django import forms
 
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models.app_platform_event import AppPlatformEvent
 from sentry.api.serializers.models.incident import IncidentSerializer
 from sentry.constants import SentryAppInstallationStatus
-from sentry.incidents.logic import get_alertable_sentry_apps
 from sentry.incidents.models import INCIDENT_STATUS
 from sentry.integrations.metric_alerts import incident_attachment_info, incident_status_info
 from sentry.models import SentryApp, SentryAppInstallation
@@ -19,7 +19,6 @@ from sentry.rules.actions.services import PluginService, SentryAppService
 from sentry.tasks.sentry_apps import notify_sentry_app, send_and_save_webhook_request
 from sentry.utils import metrics
 from sentry.utils.safe import safe_execute
-
 
 logger = logging.getLogger("sentry.integrations.sentry_app")
 
@@ -159,7 +158,8 @@ class NotifyEventServiceAction(EventAction):
 
     def get_sentry_app_services(self):
         return [
-            SentryAppService(app) for app in get_alertable_sentry_apps(self.project.organization_id)
+            SentryAppService(app)
+            for app in SentryApp.objects.get_alertable_sentry_apps(self.project.organization_id)
         ]
 
     def get_plugins(self):

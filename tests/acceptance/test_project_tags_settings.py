@@ -1,8 +1,10 @@
 from datetime import datetime
-from sentry.testutils import AcceptanceTestCase, SnubaTestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
-from sentry.utils.compat.mock import patch
+
 import pytz
+
+from sentry.testutils import AcceptanceTestCase, SnubaTestCase
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils.compat.mock import patch
 
 event_time = before_now(days=3).replace(tzinfo=pytz.utc)
 current_time = datetime.utcnow().replace(tzinfo=pytz.utc)
@@ -39,8 +41,8 @@ class ProjectTagsSettingsTest(AcceptanceTestCase, SnubaTestCase):
 
         self.browser.wait_until_test_id("tag-row")
         self.browser.click('[data-test-id="tag-row"] [data-test-id="delete"]')
-        self.browser.wait_until('.modal-footer [data-test-id="confirm-button"]')
+        self.browser.wait_until("[role='dialog'] [data-test-id='confirm-button']")
 
-        self.browser.click('.modal-footer [data-test-id="confirm-button"]')
+        self.browser.click("[role='dialog'] [data-test-id='confirm-button']")
         self.browser.wait_until_not('[data-test-id="tag-row"]')
         self.browser.snapshot("project settings - tags - after remove")

@@ -1,4 +1,5 @@
 from datetime import timedelta
+
 from django.db import models
 from django.utils import timezone
 
@@ -10,7 +11,7 @@ def default_expiration():
 
 
 class Broadcast(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     upstream_id = models.CharField(max_length=32, null=True, blank=True)
     title = models.CharField(max_length=32)
@@ -29,7 +30,7 @@ class Broadcast(Model):
 
 
 class BroadcastSeen(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     broadcast = FlexibleForeignKey("sentry.Broadcast")
     user = FlexibleForeignKey("sentry.User")

@@ -1,6 +1,6 @@
 import logging
 
-from django.db import models, IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from sentry.adoption import manager
@@ -197,7 +197,7 @@ class FeatureAdoptionManager(BaseManager):
 
 
 class FeatureAdoption(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     organization = FlexibleForeignKey("sentry.Organization")
     feature_id = models.PositiveIntegerField(choices=[(f.id, str(f.name)) for f in manager.all()])

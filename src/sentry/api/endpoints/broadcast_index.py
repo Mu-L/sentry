@@ -1,14 +1,14 @@
-from functools import reduce
 import logging
+from functools import reduce
+from operator import or_
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
-from operator import or_
 
 from sentry.api.bases.organization import OrganizationEndpoint, OrganizationPermission
 from sentry.api.paginator import DateTimePaginator
-from sentry.api.serializers import serialize, AdminBroadcastSerializer, BroadcastSerializer
+from sentry.api.serializers import AdminBroadcastSerializer, BroadcastSerializer, serialize
 from sentry.api.validators import AdminBroadcastValidator, BroadcastValidator
 from sentry.auth.superuser import is_active_superuser
 from sentry.db.models.query import in_icontains
@@ -121,7 +121,7 @@ class BroadcastIndexEndpoint(OrganizationEndpoint):
             queryset = queryset.filter(id__in=ids)
 
         if result.get("hasSeen"):
-            if not request.user.is_authenticated():
+            if not request.user.is_authenticated:
                 return self.respond(status=401)
 
             if ids:

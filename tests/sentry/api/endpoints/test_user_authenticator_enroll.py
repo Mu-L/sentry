@@ -1,9 +1,9 @@
 import os
-
 from urllib.parse import parse_qsl
-from django.core.urlresolvers import reverse
+
 from django.conf import settings
 from django.db.models import F
+from django.urls import reverse
 
 from sentry.models import (
     AuditLogEntry,
@@ -11,10 +11,10 @@ from sentry.models import (
     Authenticator,
     Organization,
     OrganizationMember,
+    UserEmail,
 )
-from sentry.utils import json
-from sentry.utils.compat import mock
 from sentry.testutils import APITestCase
+from sentry.utils.compat import mock
 
 
 # TODO(joshuarli): move all fixtures to a standard path relative to gitroot,
@@ -53,8 +53,10 @@ class UserAuthenticatorEnrollTest(APITestCase):
 
         assert resp.status_code == 200
         assert resp.data["secret"] == "Z" * 32
-        with open(get_fixture_path("totp_qrcode.json")) as f:
-            assert resp.data["qrcode"] == json.loads(f.read())
+        assert (
+            resp.data["qrcode"]
+            == "otpauth://totp/a%40example.com?issuer=Sentry&secret=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+        )
         assert resp.data["form"]
         assert resp.data["secret"]
 
@@ -149,6 +151,31 @@ class UserAuthenticatorEnrollTest(APITestCase):
             assert resp.status_code == 400
             resp = self.client.post(url, data={"secret": "secret12", "phone": "1231234", "otp": ""})
             assert resp.status_code == 400
+
+    def test_sms_no_verified_email(self):
+        user = self.create_user()
+        UserEmail.objects.filter(user=user, email=user.email).update(is_verified=False)
+
+        self.login_as(user)
+        new_options = settings.SENTRY_OPTIONS.copy()
+        new_options["sms.twilio-account"] = "twilio-account"
+
+        with self.settings(SENTRY_OPTIONS=new_options):
+            url = reverse(
+                "sentry-api-0-user-authenticator-enroll",
+                kwargs={"user_id": "me", "interface_id": "sms"},
+            )
+            resp = self.client.post(
+                url, data={"secret": "secret12", "phone": "1231234", "otp": None}
+            )
+            assert resp.status_code == 401
+            assert resp.data == {
+                "detail": {
+                    "code": "email-verification-required",
+                    "message": "Email verification required.",
+                    "extra": {"username": user.email},
+                }
+            }
 
     @mock.patch(
         "sentry.api.endpoints.user_authenticator_enroll.ratelimiter.is_limited", return_value=True

@@ -1,7 +1,7 @@
-from sentry.testutils import APITestCase, SnubaTestCase
-from django.core.urlresolvers import reverse
+from django.urls import NoReverseMatch, reverse
 
 from sentry.discover.models import DiscoverSavedQuery, DiscoverSavedQueryProject
+from sentry.testutils import APITestCase, SnubaTestCase
 
 
 class DiscoverSavedQueryDetailTest(APITestCase, SnubaTestCase):
@@ -32,6 +32,10 @@ class DiscoverSavedQueryDetailTest(APITestCase, SnubaTestCase):
         invalid.set_projects(self.project_ids)
 
         self.query_id_without_access = invalid.id
+
+    def test_invalid_id(self):
+        with self.assertRaises(NoReverseMatch):
+            reverse("sentry-api-0-discover-saved-query-detail", args=[self.org.slug, "not-an-id"])
 
     def test_get(self):
         with self.feature(self.feature_name):
@@ -131,6 +135,49 @@ class DiscoverSavedQueryDetailTest(APITestCase, SnubaTestCase):
             )
 
             assert response.status_code == 404
+
+    def test_put_query_with_team(self):
+        team = self.create_team(organization=self.org, members=[self.user])
+        project = self.create_project(organization=self.org, teams=[team])
+        query = DiscoverSavedQuery.objects.create(
+            organization=self.org,
+            created_by=self.user,
+            name="Test query",
+            query={"fields": ["test"], "conditions": [], "limit": 10},
+        )
+        query.set_projects([project.id])
+
+        with self.feature(self.feature_name):
+            url = reverse(
+                "sentry-api-0-discover-saved-query-detail",
+                args=[self.org.slug, query.id],
+            )
+
+            response = self.client.put(url, {"name": "New query", "projects": [], "range": "24h"})
+
+            assert response.status_code == 200
+
+    def test_put_query_without_team(self):
+        team = self.create_team(organization=self.org, members=[])
+        project = self.create_project(organization=self.org, teams=[team])
+        query = DiscoverSavedQuery.objects.create(
+            organization=self.org,
+            created_by=self.user,
+            name="Test query",
+            query={"fields": ["test"], "conditions": [], "limit": 10},
+        )
+        query.set_projects([project.id])
+
+        with self.feature(self.feature_name):
+            url = reverse(
+                "sentry-api-0-discover-saved-query-detail",
+                args=[self.org.slug, query.id],
+            )
+
+            response = self.client.put(url, {"name": "New query", "projects": [], "range": "24h"})
+
+            assert response.status_code == 400
+            assert "No Projects found, join a Team" == response.data["detail"]
 
     def test_put_org_without_access(self):
         with self.feature(self.feature_name):

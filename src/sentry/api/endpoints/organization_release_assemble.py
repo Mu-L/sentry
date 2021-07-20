@@ -5,10 +5,10 @@ from sentry.api.bases.organization import OrganizationReleasesBaseEndpoint
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.models import Release
 from sentry.tasks.assemble import (
-    get_assemble_status,
-    set_assemble_status,
     AssembleTask,
     ChunkFileState,
+    get_assemble_status,
+    set_assemble_status,
 )
 from sentry.utils import json
 
@@ -48,7 +48,7 @@ class OrganizationReleaseAssembleEndpoint(OrganizationReleasesBaseEndpoint):
             jsonschema.validate(data, schema)
         except jsonschema.ValidationError as e:
             return Response({"error": str(e).splitlines()[0]}, status=400)
-        except BaseException:
+        except Exception:
             return Response({"error": "Invalid json body"}, status=400)
 
         checksum = data.get("checksum", None)

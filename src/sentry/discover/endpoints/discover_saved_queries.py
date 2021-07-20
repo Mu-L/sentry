@@ -1,13 +1,14 @@
 from django.db.models import Case, When
+from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
 
 from sentry import features
-from sentry.api.serializers import serialize
-from sentry.api.bases import OrganizationEndpoint
+from sentry.api.bases import NoProjects, OrganizationEndpoint
 from sentry.api.paginator import GenericOffsetPaginator
-from sentry.discover.models import DiscoverSavedQuery
+from sentry.api.serializers import serialize
 from sentry.discover.endpoints.bases import DiscoverSavedQueryPermission
 from sentry.discover.endpoints.serializers import DiscoverSavedQuerySerializer
+from sentry.discover.models import DiscoverSavedQuery
 from sentry.search.utils import tokenize_query
 
 
@@ -88,13 +89,16 @@ class DiscoverSavedQueriesEndpoint(OrganizationEndpoint):
         if not self.has_feature(organization, request):
             return self.respond(status=404)
 
+        try:
+            params = self.get_filter_params(
+                request, organization, project_ids=request.data.get("projects")
+            )
+        except NoProjects:
+            raise ParseError(detail="No Projects found, join a Team")
+
         serializer = DiscoverSavedQuerySerializer(
             data=request.data,
-            context={
-                "params": self.get_filter_params(
-                    request, organization, project_ids=request.data.get("projects")
-                )
-            },
+            context={"params": params},
         )
 
         if not serializer.is_valid():
@@ -107,7 +111,7 @@ class DiscoverSavedQueriesEndpoint(OrganizationEndpoint):
             name=data["name"],
             query=data["query"],
             version=data["version"],
-            created_by=request.user if request.user.is_authenticated() else None,
+            created_by=request.user if request.user.is_authenticated else None,
         )
 
         model.set_projects(data["project_ids"])

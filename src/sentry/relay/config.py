@@ -1,25 +1,48 @@
 import uuid
+from datetime import datetime
+from typing import List
 
+from pytz import utc
 from sentry_sdk import Hub
 
-from datetime import datetime
-from pytz import utc
-
-from sentry import quotas, utils, features
+from sentry import features, quotas, utils
 from sentry.constants import ObjectStatus
+from sentry.datascrubbing import get_datascrubbing_settings, get_pii_config
 from sentry.grouping.api import get_grouping_config_dict_for_project
-from sentry.interfaces.security import DEFAULT_DISALLOWED_SOURCES
 from sentry.ingest.inbound_filters import (
-    get_all_filter_specs,
-    FilterTypes,
     FilterStatKeys,
+    FilterTypes,
+    get_all_filter_specs,
     get_filter_key,
 )
+from sentry.interfaces.security import DEFAULT_DISALLOWED_SOURCES
+from sentry.models import Project, ProjectKeyStatus
+from sentry.relay.utils import to_camel_case_name
 from sentry.utils.http import get_origins
 from sentry.utils.sdk import configure_scope
-from sentry.relay.utils import to_camel_case_name
-from sentry.datascrubbing import get_pii_config, get_datascrubbing_settings
-from sentry.models.projectkey import ProjectKeyStatus
+
+#: These features will be listed in the project config
+EXPOSABLE_FEATURES = [
+    "organizations:metrics-extraction",
+]
+
+
+def get_exposed_features(project: Project) -> List[str]:
+
+    active_features = []
+    for feature in EXPOSABLE_FEATURES:
+        if feature.startswith("organizations:"):
+            if features.has(feature, project.organization):
+                active_features.append(feature)
+
+        elif feature.startswith("projects:"):
+            if features.has(feature, project):
+                active_features.append(feature)
+
+        else:
+            raise RuntimeError("EXPOSABLE_FEATURES must start with 'organizations:' or 'projects:'")
+
+    return active_features
 
 
 def get_project_key_config(project_key):
@@ -125,6 +148,7 @@ def get_project_config(project, full_config=True, project_keys=None):
                 ],
                 "piiConfig": get_pii_config(project),
                 "datascrubbingSettings": get_datascrubbing_settings(project),
+                "features": get_exposed_features(project),
             },
             "organizationId": project.organization_id,
             "projectId": project.id,  # XXX: Unused by Relay, required by Python store
@@ -142,6 +166,8 @@ def get_project_config(project, full_config=True, project_keys=None):
         # This is all we need for external Relay processors
         return ProjectConfig(project, **cfg)
 
+    if features.has("organizations:performance-ops-breakdown", project.organization):
+        cfg["config"]["breakdownsV2"] = project.get_option("sentry:breakdowns")
     with Hub.current.start_span(op="get_filter_settings"):
         cfg["config"]["filterSettings"] = get_filter_settings(project)
     with Hub.current.start_span(op="get_grouping_config_dict_for_project"):

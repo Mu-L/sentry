@@ -1,8 +1,7 @@
 import pytz
-
 from django.conf import settings
 from django.middleware.locale import LocaleMiddleware
-from django.utils.translation import _trans, LANGUAGE_SESSION_KEY
+from django.utils.translation import LANGUAGE_SESSION_KEY, _trans
 
 from sentry.models import UserOption
 from sentry.utils.safe import safe_execute
@@ -34,7 +33,7 @@ class SentryLocaleMiddleware(LocaleMiddleware):
             super().process_request(request)
 
     def load_user_conf(self, request):
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return
 
         language = UserOption.objects.get_value(user=request.user, key="language")

@@ -1,11 +1,11 @@
 from django import template
 from django.http import HttpRequest
 
-from sentry.auth.access import from_user, NoAccess
 from sentry.api.serializers.base import serialize as serialize_func
 from sentry.api.serializers.models.organization import (
     DetailedOrganizationSerializerWithProjectsAndTeams,
 )
+from sentry.auth.access import NoAccess, from_user
 from sentry.utils import json
 
 register = template.Library()
@@ -47,7 +47,7 @@ def get_user_context(request, escape=False):
     if isinstance(request, HttpRequest):
         user = getattr(request, "user", None)
         result = {"ip_address": request.META["REMOTE_ADDR"]}
-        if user and user.is_authenticated():
+        if user and user.is_authenticated:
             result.update({"email": user.email, "id": user.id})
             if user.name:
                 result["name"] = user.name

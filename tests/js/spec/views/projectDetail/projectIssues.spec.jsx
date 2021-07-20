@@ -1,22 +1,24 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 
 import ProjectIssues from 'app/views/projectDetail/projectIssues';
 
 describe('ProjectDetail > ProjectIssues', function () {
-  let endpointMock, filteredEndpointMock;
-  const {organization, router, routerContext} = initializeOrg();
+  let endpointMock, filteredEndpointMock, wrapper;
+  const {organization, router, routerContext} = initializeOrg({
+    organization: {
+      features: ['discover-basic'],
+    },
+  });
 
   beforeEach(function () {
     endpointMock = MockApiClient.addMockResponse({
-      url: `/organizations/${organization.slug}/issues/?limit=5&query=is%3Aunresolved&sort=freq&statsPeriod=14d`,
+      url: `/organizations/${organization.slug}/issues/?limit=5&query=is%3Aunresolved%20error.unhandled%3Atrue&sort=freq&statsPeriod=14d`,
       body: [TestStubs.Group(), TestStubs.Group({id: '2'})],
     });
 
     filteredEndpointMock = MockApiClient.addMockResponse({
-      url: `/organizations/${organization.slug}/issues/?environment=staging&limit=5&query=is%3Aunresolved&sort=freq&statsPeriod=7d`,
+      url: `/organizations/${organization.slug}/issues/?environment=staging&limit=5&query=is%3Aunresolved%20error.unhandled%3Atrue&sort=freq&statsPeriod=7d`,
       body: [TestStubs.Group(), TestStubs.Group({id: '2'})],
     });
 
@@ -28,37 +30,61 @@ describe('ProjectDetail > ProjectIssues', function () {
 
   afterEach(function () {
     MockApiClient.clearMockResponses();
+    wrapper.unmount();
   });
 
   it('renders a list', function () {
-    const wrapper = mountWithTheme(
+    wrapper = mountWithTheme(
       <ProjectIssues organization={organization} location={router.location} />,
       routerContext
     );
 
-    expect(wrapper.find('SectionHeading').text()).toBe('Frequent Issues');
+    expect(wrapper.find('SectionHeading').text()).toBe('Frequent Unhandled Issues');
     expect(wrapper.find('StreamGroup').length).toBe(2);
   });
 
   it('renders a link to Issues', function () {
-    const wrapper = mountWithTheme(
+    wrapper = mountWithTheme(
       <ProjectIssues organization={organization} location={router.location} />,
       routerContext
     );
 
-    expect(wrapper.find('ControlsWrapper Link').prop('to')).toEqual({
+    expect(
+      wrapper.find('ControlsWrapper Link[aria-label="Open in Issues"]').prop('to')
+    ).toEqual({
       pathname: `/organizations/${organization.slug}/issues/`,
       query: {
         limit: 5,
-        query: 'is:unresolved',
+        query: 'is:unresolved error.unhandled:true',
         sort: 'freq',
         statsPeriod: '14d',
       },
     });
   });
 
+  it('renders a link to Discover', function () {
+    wrapper = mountWithTheme(
+      <ProjectIssues organization={organization} location={router.location} />,
+      routerContext
+    );
+
+    expect(
+      wrapper.find('ControlsWrapper Link[aria-label="Open in Discover"]').prop('to')
+    ).toEqual({
+      pathname: `/organizations/${organization.slug}/discover/results/`,
+      query: {
+        display: 'top5',
+        field: ['issue', 'title', 'count()', 'count_unique(user)', 'project'],
+        name: 'Frequent Unhandled Issues',
+        query: 'event.type:error error.unhandled:true',
+        sort: ['-count'],
+        statsPeriod: '14d',
+      },
+    });
+  });
+
   it('changes according to global header', function () {
-    const wrapper = mountWithTheme(
+    wrapper = mountWithTheme(
       <ProjectIssues
         organization={organization}
         location={{
@@ -71,13 +97,15 @@ describe('ProjectDetail > ProjectIssues', function () {
     expect(endpointMock).toHaveBeenCalledTimes(0);
     expect(filteredEndpointMock).toHaveBeenCalledTimes(1);
 
-    expect(wrapper.find('ControlsWrapper Link').prop('to')).toEqual({
+    expect(
+      wrapper.find('ControlsWrapper Link[aria-label="Open in Issues"]').prop('to')
+    ).toEqual({
       pathname: `/organizations/${organization.slug}/issues/`,
       query: {
         limit: 5,
         environment: 'staging',
         statsPeriod: '7d',
-        query: 'is:unresolved',
+        query: 'is:unresolved error.unhandled:true',
         sort: 'freq',
       },
     });

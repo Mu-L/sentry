@@ -1,10 +1,10 @@
 from exam import fixture
 
 from sentry.testutils import AcceptanceTestCase
+from sentry_plugins.opsgenie.plugin import OpsGeniePlugin
 from tests.acceptance.page_objects.organization_integration_settings import (
     OrganizationAbstractDetailViewPage,
 )
-from sentry_plugins.opsgenie.plugin import OpsGeniePlugin
 
 
 class OrganizationPluginDetailedView(AcceptanceTestCase):
@@ -33,7 +33,7 @@ class OrganizationPluginDetailedView(AcceptanceTestCase):
         detail_view_page = OrganizationAbstractDetailViewPage(browser=self.browser)
         detail_view_page.click_install_button()
 
-        self.browser.click('[id="react-select-2-option-0"]')
+        self.browser.click('[id="react-select-2-option-0-0"]')
         # check if we got to the configuration page with the form
         self.browser.wait_until_not(".loading-indicator")
         self.browser.wait_until_test_id("plugin-config")

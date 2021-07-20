@@ -1,10 +1,10 @@
-from functools import reduce
 import itertools
 import logging
 import operator
 import random
 import uuid
 from collections import defaultdict, namedtuple
+from functools import reduce
 from hashlib import md5
 
 from django.utils import timezone
@@ -12,10 +12,10 @@ from django.utils.encoding import force_bytes
 from pkg_resources import resource_string
 
 from sentry.tsdb.base import BaseTSDB
+from sentry.utils.compat import crc32, map, zip
 from sentry.utils.dates import to_datetime, to_timestamp
-from sentry.utils.redis import check_cluster_versions, get_cluster_from_options, SentryScript
+from sentry.utils.redis import SentryScript, check_cluster_versions, get_cluster_from_options
 from sentry.utils.versioning import Version
-from sentry.utils.compat import map, zip, crc32
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +260,9 @@ class RedisTSDB(BaseTSDB):
                     if key_expiries.get(hash_key):
                         client.expireat(hash_key, key_expiries.pop(hash_key))
 
-    def get_range(self, model, keys, start, end, rollup=None, environment_ids=None):
+    def get_range(
+        self, model, keys, start, end, rollup=None, environment_ids=None, use_cache=False
+    ):
         """
         To get a range of data for group ID=[1, 2, 3]:
 
@@ -333,7 +335,7 @@ class RedisTSDB(BaseTSDB):
                 for rollup, series in data.items():
                     for timestamp, results in series.items():
                         for environment_id, promises in results.items():
-                            total = sum([int(p.value) for p in promises if p.value])
+                            total = sum(int(p.value) for p in promises if p.value)
                             if total:
                                 (
                                     destination_hash_key,
@@ -433,7 +435,7 @@ class RedisTSDB(BaseTSDB):
         }
 
     def get_distinct_counts_totals(
-        self, model, keys, start, end=None, rollup=None, environment_id=None
+        self, model, keys, start, end=None, rollup=None, environment_id=None, use_cache=False
     ):
         """
         Count distinct items during a time range.

@@ -8,38 +8,43 @@ from rest_framework.exceptions import ParseError, PermissionDenied
 from rest_framework.response import Response
 
 from sentry import features
-from sentry.api.bases import OrganizationEventsEndpointBase, OrganizationEventPermission
-from sentry.constants import ALLOWED_FUTURE_DELTA
+from sentry.api.bases import OrganizationEventPermission, OrganizationEventsEndpointBase
 from sentry.api.event_search import SearchFilter
 from sentry.api.helpers.group_index import (
+    ValidationError,
     build_query_params_from_request,
     calculate_stats_period,
     delete_groups,
     get_by_short_id,
     rate_limit_endpoint,
+    track_slo_response,
     update_groups,
-    ValidationError,
 )
-from sentry.api.paginator import DateTimePaginator
+from sentry.api.paginator import DateTimePaginator, Paginator
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models.group import StreamGroupSerializerSnuba
-from sentry.api.utils import get_date_range_from_params, InvalidParams
-from sentry.models import Environment, Group, GroupEnvironment, GroupInbox, GroupStatus, Project
+from sentry.api.utils import InvalidParams, get_date_range_from_params
+from sentry.constants import ALLOWED_FUTURE_DELTA
+from sentry.exceptions import InvalidSearchQuery
+from sentry.models import (
+    QUERY_STATUS_LOOKUP,
+    Environment,
+    Group,
+    GroupEnvironment,
+    GroupInbox,
+    GroupStatus,
+    Project,
+)
+from sentry.search.events.constants import EQUALITY_OPERATORS
 from sentry.search.snuba.backend import (
-    assigned_or_suggested_filter,
     EventsDatasetSnubaSearchBackend,
+    assigned_or_suggested_filter,
 )
-from sentry.search.snuba.executors import (
-    get_search_filter,
-    InvalidSearchQuery,
-    PostgresSnubaQueryExecutor,
-)
+from sentry.search.snuba.executors import get_search_filter
 from sentry.snuba import discover
 from sentry.utils.compat import map
 from sentry.utils.cursors import Cursor, CursorResult
-
 from sentry.utils.validators import normalize_event_id
-
 
 ERR_INVALID_STATS_PERIOD = "Invalid stats_period. Valid choices are '', '24h', and '14d'"
 
@@ -75,11 +80,11 @@ def inbox_search(
     # can be.
     earliest_date = now - timedelta(days=7)
     start_params = [date_from, earliest_date, get_search_filter(search_filters, "date", ">")]
-    start = max([_f for _f in start_params if _f])
+    start = max(_f for _f in start_params if _f)
     end = max([earliest_date, end])
 
     if start >= end:
-        return PostgresSnubaQueryExecutor.empty_result
+        return Paginator(Group.objects.none()).get_result()
 
     # Make sure search terms are valid
     invalid_search_terms = [
@@ -92,7 +97,11 @@ def inbox_search(
     if not get_search_filter(search_filters, "for_review", "="):
         raise InvalidSearchQuery("Sort key 'inbox' only supported for inbox search")
 
-    if get_search_filter(search_filters, "status", "=") != GroupStatus.UNRESOLVED:
+    if get_search_filter(
+        search_filters, "status", "="
+    ) != GroupStatus.UNRESOLVED and get_search_filter(search_filters, "status", "IN") != [
+        GroupStatus.UNRESOLVED
+    ]:
         raise InvalidSearchQuery("Inbox search only works for 'unresolved' status")
 
     # We just filter on `GroupInbox.date_added` here, and don't filter by date
@@ -112,7 +121,7 @@ def inbox_search(
             .distinct()
         )
 
-    owner_search = get_search_filter(search_filters, "assigned_or_suggested", "=")
+    owner_search = get_search_filter(search_filters, "assigned_or_suggested", "IN")
     if owner_search:
         qs = qs.filter(
             assigned_or_suggested_filter(owner_search, projects, field_filter="group_id")
@@ -165,6 +174,7 @@ class OrganizationGroupIndexEndpoint(OrganizationEventsEndpointBase):
             result = search.query(**query_kwargs)
         return result, query_kwargs
 
+    @track_slo_response("workflow")
     @rate_limit_endpoint(limit=10, window=1)
     def get(self, request, organization):
         """
@@ -217,7 +227,6 @@ class OrganizationGroupIndexEndpoint(OrganizationEventsEndpointBase):
 
         expand = request.GET.getlist("expand", [])
         collapse = request.GET.getlist("collapse", [])
-        has_inbox = features.has("organizations:inbox", organization, actor=request.user)
         if stats_period not in (None, "", "24h", "14d", "auto"):
             return Response({"detail": ERR_INVALID_STATS_PERIOD}, status=400)
         stats_period, stats_period_start, stats_period_end = calculate_stats_period(
@@ -234,7 +243,6 @@ class OrganizationGroupIndexEndpoint(OrganizationEventsEndpointBase):
             stats_period_end=stats_period_end,
             expand=expand,
             collapse=collapse,
-            has_inbox=has_inbox,
         )
 
         projects = self.get_projects(request, organization)
@@ -326,10 +334,11 @@ class OrganizationGroupIndexEndpoint(OrganizationEventsEndpointBase):
         status = [
             search_filter
             for search_filter in query_kwargs.get("search_filters", [])
-            if search_filter.key.name == "status"
+            if search_filter.key.name == "status" and search_filter.operator in EQUALITY_OPERATORS
         ]
-        if status and status[0].value.raw_value == GroupStatus.UNRESOLVED:
-            context = [r for r in context if "status" not in r or r["status"] == "unresolved"]
+        if status and (GroupStatus.UNRESOLVED in status[0].value.raw_value):
+            status_labels = {QUERY_STATUS_LOOKUP[s] for s in status[0].value.raw_value}
+            context = [r for r in context if "status" not in r or r["status"] in status_labels]
 
         response = Response(context)
 
@@ -338,6 +347,7 @@ class OrganizationGroupIndexEndpoint(OrganizationEventsEndpointBase):
         # TODO(jess): add metrics that are similar to project endpoint here
         return response
 
+    @track_slo_response("workflow")
     @rate_limit_endpoint(limit=10, window=1)
     def put(self, request, organization):
         """
@@ -401,7 +411,6 @@ class OrganizationGroupIndexEndpoint(OrganizationEventsEndpointBase):
         :auth: required
         """
         projects = self.get_projects(request, organization)
-        has_inbox = features.has("organizations:inbox", organization, actor=request.user)
         if len(projects) > 1 and not features.has(
             "organizations:global-views", organization, actor=request.user
         ):
@@ -416,8 +425,12 @@ class OrganizationGroupIndexEndpoint(OrganizationEventsEndpointBase):
             projects,
             self.get_environments(request, organization),
         )
-        return update_groups(request, projects, organization.id, search_fn, has_inbox)
 
+        return update_groups(
+            request, request.GET.getlist("id"), projects, organization.id, search_fn
+        )
+
+    @track_slo_response("workflow")
     @rate_limit_endpoint(limit=10, window=1)
     def delete(self, request, organization):
         """

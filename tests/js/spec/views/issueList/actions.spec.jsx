@@ -1,15 +1,15 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 import {mountGlobalModal} from 'sentry-test/modal';
 import {selectByLabel} from 'sentry-test/select-new';
 
+import GroupStore from 'app/stores/groupStore';
 import SelectedGroupStore from 'app/stores/selectedGroupStore';
 import {IssueListActions} from 'app/views/issueList/actions';
 
 describe('IssueListActions', function () {
   let actions;
+  let actionsWrapper;
   let wrapper;
 
   afterEach(() => {
@@ -44,6 +44,10 @@ describe('IssueListActions', function () {
           />,
           routerContext
         );
+      });
+
+      afterAll(() => {
+        wrapper.unmount();
       });
 
       it('after checking "Select all" checkbox, displays bulk select message', async function () {
@@ -111,6 +115,10 @@ describe('IssueListActions', function () {
         );
       });
 
+      afterAll(() => {
+        wrapper.unmount();
+      });
+
       it('after checking "Select all" checkbox, displays bulk select message', async function () {
         wrapper.find('ActionsCheckbox Checkbox').simulate('change');
         expect(wrapper.find('SelectAllNotice')).toSnapshot();
@@ -173,6 +181,10 @@ describe('IssueListActions', function () {
           />,
           TestStubs.routerContext()
         );
+      });
+
+      afterAll(() => {
+        wrapper.unmount();
       });
 
       it('resolves selected items', function () {
@@ -249,7 +261,7 @@ describe('IssueListActions', function () {
   describe('actionSelectedGroups()', function () {
     beforeEach(function () {
       jest.spyOn(SelectedGroupStore, 'deselectAll');
-      actions = mountWithTheme(
+      actionsWrapper = mountWithTheme(
         <IssueListActions
           api={new MockApiClient()}
           query=""
@@ -266,7 +278,12 @@ describe('IssueListActions', function () {
           realtimeActive={false}
           statsPeriod="24h"
         />
-      ).instance();
+      );
+      actions = actionsWrapper.instance();
+    });
+
+    afterEach(() => {
+      actionsWrapper.unmount();
     });
 
     describe('for all items', function () {
@@ -329,6 +346,10 @@ describe('IssueListActions', function () {
       );
     });
 
+    afterEach(() => {
+      wrapper.unmount();
+    });
+
     it('should disable resolve dropdown but not resolve action', function () {
       const resolve = wrapper.find('ResolveActions').first();
       expect(resolve.props().disabled).toBe(false);
@@ -344,10 +365,10 @@ describe('IssueListActions', function () {
     });
   });
 
-  describe('with inbox feature', function () {
+  describe('mark reviewed', function () {
+    let issuesApiMock;
     beforeEach(async () => {
-      SelectedGroupStore.init();
-      await tick();
+      SelectedGroupStore.records = {};
       const {organization} = TestStubs.routerContext().context;
       wrapper = mountWithTheme(
         <IssueListActions
@@ -366,41 +387,60 @@ describe('IssueListActions', function () {
           statsPeriod="24h"
           queryCount={100}
           displayCount="3 of 3"
-          hasInbox
         />,
         TestStubs.routerContext()
       );
+      MockApiClient.addMockResponse({
+        url: '/organizations/org-slug/projects/',
+        body: [TestStubs.Project({slug: 'earth', platform: 'javascript'})],
+      });
+      issuesApiMock = MockApiClient.addMockResponse({
+        url: '/organizations/org-slug/issues/',
+        method: 'PUT',
+      });
     });
 
-    it('hides actions when no issues are selected', async function () {
-      expect(wrapper.find('[aria-label="Mark Reviewed"]').exists()).toBe(false);
-    });
-
-    it('displays actions on issue selection', async function () {
-      wrapper.find('IssueListActions').setState({anySelected: true});
-      expect(wrapper.find('[aria-label="Mark Reviewed"]').exists()).toBe(true);
+    afterEach(() => {
+      wrapper.unmount();
     });
 
     it('acknowledges group', async function () {
       wrapper.find('IssueListActions').setState({anySelected: true});
       SelectedGroupStore.add(['1', '2', '3']);
       SelectedGroupStore.toggleSelectAll();
+      const inbox = {
+        date_added: '2020-11-24T13:17:42.248751Z',
+        reason: 0,
+        reason_details: null,
+      };
+      GroupStore.loadInitialData([
+        TestStubs.Group({id: '1', inbox}),
+        TestStubs.Group({id: '2', inbox}),
+        TestStubs.Group({id: '2', inbox}),
+      ]);
 
       await tick();
-      wrapper.update();
 
-      const apiMock = MockApiClient.addMockResponse({
-        url: '/organizations/org-slug/issues/',
-        method: 'PUT',
-      });
       wrapper.find('button[aria-label="Mark Reviewed"]').simulate('click');
-
-      expect(apiMock).toHaveBeenCalledWith(
+      expect(issuesApiMock).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
           data: {inbox: false},
         })
       );
+    });
+
+    it('mark reviewed disabled for group that is already reviewed', async function () {
+      wrapper.find('IssueListActions').setState({anySelected: true});
+      SelectedGroupStore.add(['1']);
+      SelectedGroupStore.toggleSelectAll();
+      GroupStore.loadInitialData([TestStubs.Group({id: '1', inbox: null})]);
+
+      await tick();
+
+      expect(
+        wrapper.find('button[aria-label="Mark Reviewed"]').props()['aria-disabled']
+      ).toBe(true);
     });
   });
 });

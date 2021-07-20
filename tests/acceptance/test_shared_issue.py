@@ -1,6 +1,6 @@
-from sentry.testutils import AcceptanceTestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
 from sentry.models import GroupShare
+from sentry.testutils import AcceptanceTestCase
+from sentry.testutils.helpers.datetime import before_now, iso_format
 from sentry.utils.samples import load_data
 
 
@@ -22,5 +22,5 @@ class SharedIssueTest(AcceptanceTestCase):
 
         self.browser.get(f"/share/issue/{event.group.get_share_id()}/")
         self.browser.wait_until_not(".loading-indicator")
-        self.browser.wait_until_test_id("event-entries")
+        self.browser.wait_until_test_id("event-entries-loading-false")
         self.browser.snapshot("shared issue python")

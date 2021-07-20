@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import DropdownAutoCompleteMenu from 'app/components/dropdownAutoComplete/menu';
@@ -94,7 +92,7 @@ describe('DropdownAutoCompleteMenu', function () {
     expect(mock).toHaveBeenCalledTimes(1);
     expect(mock).toHaveBeenCalledWith(
       {index: 1, ...countries[1]},
-      {highlightedIndex: 0, inputValue: '', isOpen: true, selectedItem: null},
+      {highlightedIndex: 0, inputValue: '', isOpen: true, selectedItem: undefined},
       expect.anything()
     );
   });

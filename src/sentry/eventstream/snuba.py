@@ -7,10 +7,9 @@ import urllib3
 
 from sentry import quotas
 from sentry.eventstream.base import EventStream
-from sentry.utils import snuba, json
+from sentry.utils import json, snuba
 from sentry.utils.safe import get_path
-from sentry.utils.sdk import set_current_project
-
+from sentry.utils.sdk import set_current_event_project
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +85,7 @@ class SnubaProtocolEventStream(EventStream):
         skip_consume=False,
     ):
         project = event.project
-        set_current_project(project.id)
+        set_current_event_project(project.id)
         retention_days = quotas.get_event_retention(organization=project.organization)
 
         event_data = event.get_raw_data(for_stream=True)
@@ -212,7 +211,9 @@ class SnubaProtocolEventStream(EventStream):
         state["datetime"] = datetime.now(tz=pytz.utc)
         self._send(state["project_id"], "end_delete_tag", extra_data=(state,), asynchronous=False)
 
-    def tombstone_events_unsafe(self, project_id, event_ids):
+    def tombstone_events_unsafe(
+        self, project_id, event_ids, old_primary_hash=False, from_timestamp=None, to_timestamp=None
+    ):
         """
         Tell Snuba to eventually delete these events.
 
@@ -228,22 +229,38 @@ class SnubaProtocolEventStream(EventStream):
         (re-insert with new group_id) and events-to-be-deleted
         (`tombstone_events`), then excludes the group from all queries
         (`exclude_groups`).
+
+        :param old_primary_hash: If present, the event is only tombstoned
+            to be reinserted over with a guaranteed-different primary hash.
+            This is necessary with Snuba's errors table as the primary_hash is
+            part of the PK/sortkey.
         """
 
         state = {
             "project_id": project_id,
             "event_ids": event_ids,
+            "old_primary_hash": old_primary_hash,
+            "from_timestamp": from_timestamp,
+            "to_timestamp": to_timestamp,
         }
         self._send(project_id, "tombstone_events", extra_data=(state,), asynchronous=False)
 
-    def replace_group_unsafe(self, project_id, event_ids, new_group_id):
+    def replace_group_unsafe(
+        self, project_id, event_ids, new_group_id, from_timestamp=None, to_timestamp=None
+    ):
         """
         Tell Snuba to move events into a new group ID
 
         Same caveats as tombstone_events
         """
 
-        state = {"project_id": project_id, "event_ids": event_ids, "new_group_id": new_group_id}
+        state = {
+            "project_id": project_id,
+            "event_ids": event_ids,
+            "new_group_id": new_group_id,
+            "from_timestamp": from_timestamp,
+            "to_timestamp": to_timestamp,
+        }
         self._send(project_id, "replace_group", extra_data=(state,), asynchronous=False)
 
     def exclude_groups(self, project_id, group_ids):
@@ -328,5 +345,12 @@ class SnubaEventStream(SnubaProtocolEventStream):
             skip_consume,
         )
         self._dispatch_post_process_group_task(
-            event, is_new, is_regression, is_new_group_environment, primary_hash, skip_consume
+            event.event_id,
+            event.project_id,
+            event.group_id,
+            is_new,
+            is_regression,
+            is_new_group_environment,
+            primary_hash,
+            skip_consume,
         )

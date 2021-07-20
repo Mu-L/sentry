@@ -1,7 +1,9 @@
 from datetime import timedelta
-from django.core.urlresolvers import reverse
+
+from django.urls import reverse
 from exam import fixture
 
+from sentry.search.events.constants import SEMVER_ALIAS
 from sentry.testutils import APITestCase, SnubaTestCase
 from sentry.testutils.helpers.datetime import before_now, iso_format
 from sentry.utils.samples import load_data
@@ -213,6 +215,16 @@ class OrganizationTagKeyValuesTest(OrganizationTagKeyTestCase):
         self.run_test("time", expected=[])
         self.run_test("time", qs_params={"query": "z"}, expected=[])
 
+    def test_group_id_tag(self):
+        self.store_event(
+            data={
+                "timestamp": iso_format(self.day_ago - timedelta(minutes=1)),
+                "tags": {"group_id": "not-a-group-id-but-a-string"},
+            },
+            project_id=self.project.id,
+        )
+        self.run_test("group_id", expected=[("not-a-group-id-but-a-string", 1)])
+
     def test_user_display(self):
         self.store_event(
             data={
@@ -259,6 +271,16 @@ class OrganizationTagKeyValuesTest(OrganizationTagKeyTestCase):
             "user.display", qs_params={"includeTransactions": "1", "query": "bar"}, expected=[]
         )
 
+    def test_semver(self):
+        self.create_release(version="test@1.0.0.0")
+        self.create_release(version="test@2.0.0.0")
+        self.run_test(SEMVER_ALIAS, expected=[("test@2.0.0.0", None), ("test@1.0.0.0", None)])
+        self.run_test(SEMVER_ALIAS, query="1.", expected=[("1.0.0.0", None)])
+        self.run_test(SEMVER_ALIAS, query="test@1.", expected=[("test@1.0.0.0", None)])
+        self.run_test(
+            SEMVER_ALIAS, query="test", expected=[("test@2.0.0.0", None), ("test@1.0.0.0", None)]
+        )
+
 
 class TransactionTagKeyValues(OrganizationTagKeyTestCase):
     def setUp(self):
@@ -274,7 +296,13 @@ class TransactionTagKeyValues(OrganizationTagKeyTestCase):
             }
         )
         self.transaction["contexts"]["trace"].update(
-            {"status": "unknown_error", "parent_span_id": "9000cec7cc0779c1", "op": "bar.server"}
+            {
+                "status": "unknown_error",
+                "trace": "a" * 32,
+                "span": "abcd1234abcd1234",
+                "parent_span_id": "9000cec7cc0779c1",
+                "op": "bar.server",
+            }
         )
         self.store_event(
             self.transaction,
@@ -321,18 +349,11 @@ class TransactionTagKeyValues(OrganizationTagKeyTestCase):
         )
         self.run_test("transaction", qs_params={"query": "city"}, expected=[("/city_by_code/", 1)])
 
-    def test_parent_span(self):
-        self.run_test(
-            "trace.parent_span", expected=[("9000cec7cc0779c1", 1), ("8988cec7cc0779c1", 1)]
-        )
-        self.run_test(
-            "trace.parent_span",
-            qs_params={"query": "cec7cc"},
-            expected=[("9000cec7cc0779c1", 1), ("8988cec7cc0779c1", 1)],
-        )
-        self.run_test(
-            "trace.parent_span", qs_params={"query": "9000"}, expected=[("9000cec7cc0779c1", 1)]
-        )
+    def test_invalid_keys(self):
+        self.run_test("trace.parent_span", expected=[])
+        self.run_test("trace.span", expected=[])
+        self.run_test("trace", expected=[])
+        self.run_test("event_id", expected=[])
 
     def test_boolean_fields(self):
         self.run_test("error.handled", expected=[("true", None), ("false", None)])

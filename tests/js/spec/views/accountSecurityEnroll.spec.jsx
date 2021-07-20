@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {Client} from 'app/api';
@@ -14,7 +12,7 @@ describe('AccountSecurityEnroll', function () {
     Client.clearMockResponses();
     const authenticator = TestStubs.Authenticators().Totp({
       isEnrolled: false,
-      qrcode: [[1, 0]],
+      qrcode: 'otpauth://totp/test%40sentry.io?issuer=Sentry&secret=secret',
       secret: 'secret',
       form: [
         {
@@ -49,7 +47,7 @@ describe('AccountSecurityEnroll', function () {
     });
 
     it('has qrcode component', function () {
-      expect(wrapper.find('Qrcode')).toHaveLength(1);
+      expect(wrapper.find('QRCode')).toHaveLength(1);
     });
 
     it('can enroll', function () {

@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import ToolbarHeader from 'app/components/toolbarHeader';
@@ -12,7 +10,7 @@ describe('ToolbarHeader', function () {
   it('renders', function () {
     const wrapper = mountWithTheme(
       <ToolbarHeader>
-        <div />
+        <div>Toolbar Header</div>
       </ToolbarHeader>
     );
     expect(wrapper).toSnapshot();

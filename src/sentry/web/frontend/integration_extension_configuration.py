@@ -1,13 +1,13 @@
 from django.core.signing import SignatureExpired
-from django.core.urlresolvers import reverse
-from django.utils.http import urlencode
 from django.http import HttpResponseRedirect
+from django.urls import reverse
+from django.utils.http import urlencode
 
-from sentry import integrations, features
+from sentry import features, integrations
 from sentry.features.exceptions import FeatureNotRegistered
 from sentry.integrations.pipeline import IntegrationPipeline
-from sentry.web.frontend.base import BaseView
 from sentry.models import Organization, OrganizationMember
+from sentry.web.frontend.base import BaseView
 
 
 class ExternalIntegrationPipeline(IntegrationPipeline):
@@ -30,7 +30,7 @@ class IntegrationExtensionConfigurationView(BaseView):
     auth_required = False
 
     def get(self, request, *args, **kwargs):
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             configure_uri = "/extensions/{}/configure/?{}".format(
                 self.provider,
                 urlencode(request.GET.dict()),
@@ -73,9 +73,7 @@ class IntegrationExtensionConfigurationView(BaseView):
                         )
 
         # if anything before fails, we give up and send them to the link page where we can display errors
-        return self.redirect(
-            "/extensions/{}/link/?{}".format(self.provider, urlencode(request.GET.dict()))
-        )
+        return self.redirect(f"/extensions/{self.provider}/link/?{urlencode(request.GET.dict())}")
 
     def init_pipeline(self, request, organization, params):
         pipeline = ExternalIntegrationPipeline(

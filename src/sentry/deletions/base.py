@@ -13,7 +13,7 @@ class BaseRelation:
         self.params = params
 
     def __repr__(self):
-        return "<{}: task={} params={}>".format(type(self), self.task, self.params)
+        return f"<{type(self)}: task={self.task} params={self.params}>"
 
 
 class ModelRelation(BaseRelation):
@@ -77,7 +77,7 @@ class BaseDeletionTask:
             return child_relations
 
         return list(
-            [rel for rel in child_relations if rel.params.get("model") not in self.skip_models]
+            rel for rel in child_relations if rel.params.get("model") not in self.skip_models
         )
 
     def delete_bulk(self, instance_list):

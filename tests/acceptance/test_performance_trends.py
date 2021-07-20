@@ -1,12 +1,12 @@
-import pytz
-
 from urllib.parse import urlencode
-from sentry.utils.compat.mock import patch
 
+import pytz
 from django.db.models import F
+
 from sentry.models import Project
 from sentry.testutils import AcceptanceTestCase, SnubaTestCase
 from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils.compat.mock import patch
 from sentry.utils.samples import load_data
 
 from .page_objects.base import BasePage
@@ -43,11 +43,10 @@ class PerformanceTrendsTest(AcceptanceTestCase, SnubaTestCase):
         self.project = self.create_project(organization=self.org, teams=[self.team], name="Bengal")
         self.group = self.create_group(project=self.project)
         self.login_as(self.user)
-        self.path = "/organizations/{}/performance/?{}".format(
+        self.path = "/organizations/{}/performance/trends/?{}".format(
             self.org.slug,
             urlencode(
                 {
-                    "view": "TRENDS",
                     "query": "transaction.duration:>0",
                     "statsPeriod": "1h",
                     "project": self.project.id,

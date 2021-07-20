@@ -4,20 +4,24 @@
 import logging
 import os
 import sys
-import pytest
-
 from contextlib import contextmanager
 from datetime import datetime
-from django.utils.text import slugify
-from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, WebDriverException
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions
-from selenium.webdriver.common.action_chains import ActionChains
 from urllib.parse import urlparse
 
-from sentry.utils.retries import TimedRetryPolicy
+import pytest
+from django.utils.text import slugify
+from selenium import webdriver
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    SessionNotCreatedException,
+    WebDriverException,
+)
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support import expected_conditions
+from selenium.webdriver.support.ui import WebDriverWait
+
 from sentry.utils.compat import map
+from sentry.utils.retries import TimedRetryPolicy
 
 logger = logging.getLogger("sentry.testutils")
 
@@ -182,6 +186,9 @@ class Browser:
 
         return self
 
+    def find_element_by_name(self, name):
+        return self.driver.find_element_by_name(name)
+
     def move_to(self, selector=None):
         """
         Mouse move to ``selector``
@@ -313,12 +320,14 @@ class Browser:
         if not os.path.exists(snapshot_dir):
             os.makedirs(snapshot_dir)
 
+        filename = slugify(name)
+
         # XXX: Unfortunately order matters here else snapshots in CI will be a tiny bit different.
         #      Otherwise we could do mobile_viewport first and early return if mobile_only.
         #      But to truly fix this, I think the driver needs to be refreshed.
         if not mobile_only:
             with self.full_viewport():
-                screenshot_path = "{}/{}.png".format(snapshot_dir, slugify(name))
+                screenshot_path = f"{snapshot_dir}/{filename}.png"
                 # This will make sure we resize viewport height to fit contents
                 self.driver.find_element_by_tag_name("body").screenshot(screenshot_path)
 
@@ -331,14 +340,14 @@ class Browser:
                     "return window.__openAllTooltips && window.__openAllTooltips()"
                 )
                 if has_tooltips:
-                    screenshot_path = "{}-tooltips/{}.png".format(snapshot_dir, slugify(name))
+                    screenshot_path = f"{snapshot_dir}-tooltips/{filename}.png"
                     self.driver.find_element_by_tag_name("body").screenshot(screenshot_path)
                     self.driver.execute_script(
                         "window.__closeAllTooltips && window.__closeAllTooltips()"
                     )
 
         with self.mobile_viewport():
-            screenshot_path = "{}-mobile/{}.png".format(snapshot_dir, slugify(name))
+            screenshot_path = f"{snapshot_dir}-mobile/{filename}.png"
             self.driver.find_element_by_tag_name("body").screenshot(screenshot_path)
 
             if os.environ.get("SENTRY_SCREENSHOT"):
@@ -448,7 +457,16 @@ def pytest_configure(config):
 
 @TimedRetryPolicy.wrap(timeout=15, exceptions=(WebDriverException,), log_original_error=True)
 def start_chrome(**chrome_args):
-    return webdriver.Chrome(**chrome_args)
+    try:
+        return webdriver.Chrome(**chrome_args)
+    except SessionNotCreatedException as e:
+        if "This version of ChromeDriver only supports Chrome version" in e.msg:
+            raise Exception(
+                """ChromeDriver version does not match Chrome version, update ChromeDriver (e.g. if you use `homebrew`):
+
+    brew upgrade --cask chromedriver
+    """
+            )
 
 
 @pytest.fixture(scope="function")
@@ -511,13 +529,6 @@ def browser(request, live_server):
     request.node.browser = browser
 
     return driver
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _environment(request):
-    config = request.config
-    # add environment details to the pytest-html plugin
-    config._metadata.update({"Driver": config.option.selenium_driver})
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)

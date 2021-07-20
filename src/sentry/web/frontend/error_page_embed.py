@@ -1,19 +1,20 @@
 from django import forms
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, router
 from django.http import HttpResponse
-from django.views.generic import View
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext_lazy as _
 from django.views.decorators.csrf import csrf_exempt
+from django.views.generic import View
 
 from sentry import eventstore
 from sentry.models import Project, ProjectKey, ProjectOption, UserReport
-from sentry.web.helpers import render_to_response, render_to_string
 from sentry.signals import user_feedback_received
 from sentry.utils import json
+from sentry.utils.db import atomic_transaction
 from sentry.utils.http import absolute_uri, is_valid_origin, origin_from_request
 from sentry.utils.validators import normalize_event_id
+from sentry.web.helpers import render_to_response, render_to_string
 
 GENERIC_ERROR = _("An unknown error occurred while submitting your report. Please try again.")
 FORM_ERROR = _("Some fields were invalid. Please correct the errors and try again.")
@@ -134,7 +135,7 @@ class ErrorPageEmbedView(View):
             if name in request.GET:
                 options[name] = str(request.GET[name])
 
-        # TODO(dcramer): since we cant use a csrf cookie we should at the very
+        # TODO(dcramer): since we can't use a csrf cookie we should at the very
         # least sign the request / add some kind of nonce
         initial = {"name": request.GET.get("name"), "email": request.GET.get("email")}
 
@@ -152,7 +153,7 @@ class ErrorPageEmbedView(View):
                 report.group_id = event.group_id
 
             try:
-                with transaction.atomic():
+                with atomic_transaction(using=router.db_for_write(UserReport)):
                     report.save()
             except IntegrityError:
                 # There was a duplicate, so just overwrite the existing
@@ -209,12 +210,16 @@ class ErrorPageEmbedView(View):
         context = {
             "endpoint": mark_safe("*/" + json.dumps(absolute_uri(request.get_full_path())) + ";/*"),
             "template": mark_safe("*/" + json.dumps(template) + ";/*"),
-            "strings": json.dumps_htmlsafe(
-                {
-                    "generic_error": str(options["errorGeneric"]),
-                    "form_error": str(options["errorFormEntry"]),
-                    "sent_message": str(options["successMessage"]),
-                }
+            "strings": mark_safe(
+                "*/"
+                + json.dumps_htmlsafe(
+                    {
+                        "generic_error": str(options["errorGeneric"]),
+                        "form_error": str(options["errorFormEntry"]),
+                        "sent_message": str(options["successMessage"]),
+                    }
+                )
+                + ";/*"
             ),
         }
 

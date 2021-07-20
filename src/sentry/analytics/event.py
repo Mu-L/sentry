@@ -2,10 +2,10 @@ from sentry.utils.compat import map
 
 __all__ = ("Attribute", "Event", "Map")
 
-from uuid import uuid1
 from base64 import b64encode
-
 from collections import Mapping
+from uuid import uuid1
+
 from django.utils import timezone
 
 from sentry.utils.dates import to_timestamp
@@ -45,8 +45,8 @@ class Map(Attribute):
                 new_value[attr.name] = attr.extract(getattr(value, attr.name, None))
             items = new_value
         else:
-            # ensure we dont mutate the original
-            # we dont need to deepcopy as if it recurses into another Map it
+            # ensure we don't mutate the original
+            # we don't need to deepcopy as if it recurses into another Map it
             # will once again copy itself
             items = value.copy()
 

@@ -1,10 +1,5 @@
 from sentry.integrations.metric_alerts import incident_attachment_info
-from sentry.models import (
-    Project,
-    GroupStatus,
-    GroupAssignee,
-    Team,
-)
+from sentry.models import GroupAssignee, GroupStatus, Project, Team
 from sentry.utils.assets import get_asset_url
 from sentry.utils.compat import map
 from sentry.utils.http import absolute_uri
@@ -328,7 +323,7 @@ def build_group_title(group):
     else:
         text = group.title
 
-    link = group.get_absolute_url()
+    link = group.get_absolute_url(params={"referrer": "msteams"})
 
     title_text = f"[{text}]({link})"
     return {
@@ -381,9 +376,9 @@ def build_group_footer(group, rules, project, event):
     text = f"{group.qualified_short_id}"
     if rules:
         rule_url = build_rule_url(rules[0], group, project)
-        text += " via [{}]({})".format(rules[0].label, rule_url)
+        text += f" via [{rules[0].label}]({rule_url})"
         if len(rules) > 1:
-            text += " (+{} other)".format(len(rules) - 1)
+            text += f" (+{len(rules) - 1} other)"
 
     text_column = {
         "type": "Column",

@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 
@@ -32,7 +30,7 @@ describe('ProjectDetail > ProjectQuickLinks', function () {
       query: {project: '2'},
     });
 
-    expect(keyTransactions.text()).toBe('Key Transactions');
+    expect(keyTransactions.text()).toBe('View Transactions');
     expect(keyTransactions.prop('to')).toEqual({
       pathname: '/organizations/org-slug/performance/',
       query: {project: '2'},
@@ -40,12 +38,11 @@ describe('ProjectDetail > ProjectQuickLinks', function () {
 
     expect(mostChangedTransactions.text()).toBe('Most Improved/Regressed Transactions');
     expect(mostChangedTransactions.prop('to')).toEqual({
-      pathname: '/organizations/org-slug/performance/',
+      pathname: '/organizations/org-slug/performance/trends/',
       query: {
         cursor: undefined,
         project: '2',
         query: 'tpm():>0.01 transaction.duration:>0 transaction.duration:<15min',
-        view: 'TRENDS',
       },
     });
   });

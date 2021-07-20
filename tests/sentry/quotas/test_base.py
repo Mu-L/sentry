@@ -1,9 +1,9 @@
+import pytest
+
 from sentry.constants import DataCategory
 from sentry.models import OrganizationOption, ProjectKey
 from sentry.quotas.base import Quota, QuotaConfig, QuotaScope
 from sentry.testutils import TestCase
-
-import pytest
 
 
 class QuotaTest(TestCase):
@@ -14,7 +14,7 @@ class QuotaTest(TestCase):
         org = self.create_organization()
         project = self.create_project(organization=org)
 
-        with self.settings(SENTRY_DEFAULT_MAX_EVENTS_PER_MINUTE=0):
+        with self.assertNumQueries(7), self.settings(SENTRY_DEFAULT_MAX_EVENTS_PER_MINUTE=0):
             with self.options({"system.rate-limit": 0}):
                 assert self.backend.get_project_quota(project) == (None, 60)
 

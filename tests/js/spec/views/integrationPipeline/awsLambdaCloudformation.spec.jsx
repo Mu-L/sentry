@@ -1,4 +1,3 @@
-import React from 'react';
 import * as qs from 'query-string';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
@@ -27,6 +26,8 @@ describe('AwsLambdaCloudformation', () => {
     );
   });
   it('submit arn', async () => {
+    wrapper.find('button[name="showInputs"]').simulate('click');
+
     wrapper
       .find('input[name="accountNumber"]')
       .simulate('change', {target: {value: '599817902985'}});

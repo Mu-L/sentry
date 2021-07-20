@@ -1,7 +1,6 @@
-from sentry.api.serializers import Serializer, register, serialize
-
 import functools
 
+from sentry.api.serializers import Serializer, register, serialize
 from sentry.search.utils import convert_user_tag_to_query
 from sentry.tagstore.base import TagKeyStatus
 
@@ -13,11 +12,11 @@ class TagType:
     def __repr__(self):
         return "<{}: {}>".format(
             type(self).__name__,
-            ", ".join("{}={!r}".format(name, getattr(self, name)) for name in self.__slots__),
+            ", ".join(f"{name}={getattr(self, name)!r}" for name in self.__slots__),
         )
 
     def __hash__(self):
-        return hash(tuple([getattr(self, name) for name in self.__slots__]))
+        return hash(tuple(getattr(self, name) for name in self.__slots__))
 
     def __eq__(self, other):
         return type(self) == type(other) and all(

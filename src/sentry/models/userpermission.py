@@ -1,10 +1,10 @@
 from django.db import models
 
-from sentry.db.models import Model, FlexibleForeignKey, sane_repr
+from sentry.db.models import FlexibleForeignKey, Model, sane_repr
 
 
 class UserPermission(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     user = FlexibleForeignKey("sentry.User")
     # permissions should be in the form of 'service-name.permission-name'

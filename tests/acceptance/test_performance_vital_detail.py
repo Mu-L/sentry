@@ -1,20 +1,17 @@
-import pytz
-
 from urllib.parse import urlencode
-from sentry.utils.compat.mock import patch
 
+import pytz
 from django.db.models import F
+
 from sentry.models import Project
 from sentry.testutils import AcceptanceTestCase, SnubaTestCase
 from sentry.testutils.helpers.datetime import before_now
+from sentry.utils.compat.mock import patch
 from sentry.utils.samples import load_data
 
 from .page_objects.base import BasePage
 
-FEATURE_NAMES = (
-    "organizations:performance-view",
-    "organizations:performance-vitals-overview",
-)
+FEATURE_NAMES = ("organizations:performance-view",)
 
 
 class PerformanceVitalDetailsTest(AcceptanceTestCase, SnubaTestCase):

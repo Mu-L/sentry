@@ -5,15 +5,15 @@ import logging
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timedelta
-import pytz
 
-from sentry.utils.compat.mock import patch
+import pytz
 from django.utils import timezone
 
 from sentry import eventstream, tagstore
 from sentry.app import tsdb
 from sentry.models import Environment, Group, GroupHash, GroupRelease, Release, UserReport
-from sentry.similarity import features, _make_index_backend
+from sentry.similarity import _make_index_backend, features
+from sentry.tasks.merge import merge_groups
 from sentry.tasks.unmerge import (
     get_caches,
     get_event_user_from_interface,
@@ -23,13 +23,12 @@ from sentry.tasks.unmerge import (
     unmerge,
 )
 from sentry.testutils import SnubaTestCase, TestCase
-from sentry.utils.dates import to_timestamp
-from sentry.utils import redis
 from sentry.testutils.helpers.datetime import before_now, iso_format
 from sentry.testutils.helpers.features import with_feature
-from sentry.tasks.merge import merge_groups
-
+from sentry.utils import redis
 from sentry.utils.compat import map
+from sentry.utils.compat.mock import patch
+from sentry.utils.dates import to_timestamp
 
 # Use the default redis client as a cluster client in the similarity index
 index = _make_index_backend(redis.clusters.get("default").get_local_client(0))
@@ -279,13 +278,9 @@ class UnmergeTestCase(TestCase, SnubaTestCase):
         assert similar_items[1][1]["message:message:character-shingles"] < 1.0
 
         with self.tasks():
-            eventstream_state = eventstream.start_unmerge(
-                project.id, [list(events.keys())[0]], source.id, destination.id
-            )
             unmerge.delay(
                 project.id, source.id, destination.id, [list(events.keys())[0]], None, batch_size=5
             )
-            eventstream.end_unmerge(eventstream_state)
 
         assert (
             list(
@@ -315,9 +310,9 @@ class UnmergeTestCase(TestCase, SnubaTestCase):
             UserReport.objects.filter(group_id=source.id).values_list("event_id", flat=True)
         ) == set(destination_event_ids)
 
-        assert set(
+        assert list(
             GroupHash.objects.filter(group_id=source.id).values_list("hash", flat=True)
-        ) == set(itertools.islice(events.keys(), 2))
+        ) == [list(events.keys())[1]]
 
         assert set(
             GroupRelease.objects.filter(group_id=source.id).values_list(
@@ -342,7 +337,7 @@ class UnmergeTestCase(TestCase, SnubaTestCase):
 
         assert set(
             GroupHash.objects.filter(group_id=destination.id).values_list("hash", flat=True)
-        ) == set(itertools.islice(events.keys(), 2, 3))
+        ) == {list(events.keys())[0], list(events.keys())[2]}
 
         assert set(
             GroupRelease.objects.filter(group_id=destination.id).values_list(

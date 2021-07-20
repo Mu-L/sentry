@@ -1,11 +1,11 @@
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import Model, FlexibleForeignKey
+from sentry.db.models import FlexibleForeignKey, Model
 
 
 class ProjectRedirect(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     redirect_slug = models.SlugField(db_index=True)
     project = FlexibleForeignKey("sentry.Project")

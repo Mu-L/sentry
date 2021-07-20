@@ -1,16 +1,15 @@
-import random
 import logging
-from rest_framework.response import Response
+import random
 
 from django.conf import settings
+from rest_framework.response import Response
+from sentry_sdk import Hub, set_tag, start_span, start_transaction
 
-from sentry_sdk import Hub, start_span, start_transaction, set_tag
-
+from sentry.api.authentication import RelayAuthentication
 from sentry.api.base import Endpoint
 from sentry.api.permissions import RelayPermission
-from sentry.api.authentication import RelayAuthentication
+from sentry.models import Organization, OrganizationOption, Project, ProjectKey, ProjectKeyStatus
 from sentry.relay import config, projectconfig_cache
-from sentry.models import Project, ProjectKey, Organization, OrganizationOption, ProjectKeyStatus
 from sentry.utils import metrics
 
 logger = logging.getLogger(__name__)
@@ -119,9 +118,8 @@ class RelayProjectConfigsEndpoint(Endpoint):
             if organization is None:
                 continue
 
-            # Try to prevent organization from being fetched again in quotas.
-            project.organization = organization
-            project._organization_cache = organization
+            # Prevent organization from being fetched again in quotas.
+            project.set_cached_field_value("organization", organization)
 
             with Hub.current.start_span(op="get_config"):
                 with metrics.timer("relay_project_configs.get_config.duration"):
@@ -184,9 +182,8 @@ class RelayProjectConfigsEndpoint(Endpoint):
             if organization is None:
                 continue
 
-            # Try to prevent organization from being fetched again in quotas.
-            project.organization = organization
-            project._organization_cache = organization
+            # Prevent organization from being fetched again in quotas.
+            project.set_cached_field_value("organization", organization)
 
             with start_span(op="get_config"):
                 with metrics.timer("relay_project_configs.get_config.duration"):

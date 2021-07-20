@@ -1,11 +1,11 @@
 import logging
+from urllib.parse import urlparse
 from uuid import uuid4
 
-from urllib.parse import urlparse
-from sentry.http import safe_urlread
 from sentry.coreapi import APIError
+from sentry.http import safe_urlread
 from sentry.mediators import Mediator, Param
-from sentry.mediators.external_requests.util import validate, send_and_save_sentry_app_request
+from sentry.mediators.external_requests.util import send_and_save_sentry_app_request, validate
 from sentry.utils import json
 from sentry.utils.cache import memoize
 
@@ -64,7 +64,7 @@ class IssueLinkRequester(Mediator):
                 self._build_url(),
                 self.sentry_app,
                 self.install.organization_id,
-                "external_issue.{}".format(action_to_past_tense[self.action]),
+                f"external_issue.{action_to_past_tense[self.action]}",
                 headers=self._build_headers(),
                 method="POST",
                 data=self.body,

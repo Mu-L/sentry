@@ -1,5 +1,6 @@
-from django.core.urlresolvers import reverse
+from django.core.signing import BadSignature, SignatureExpired
 from django.db import IntegrityError
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
 
@@ -11,8 +12,8 @@ from sentry.web.frontend.base import BaseView
 from sentry.web.helpers import render_to_response
 
 from .card_builder import build_linked_card
-from .utils import get_identity
 from .client import MsTeamsClient
+from .utils import get_identity
 
 
 def build_linking_url(integration, organization, teams_user_id, team_id, tenant_id):
@@ -33,7 +34,13 @@ class MsTeamsLinkIdentityView(BaseView):
     @transaction_start("MsTeamsLinkIdentityView")
     @never_cache
     def handle(self, request, signed_params):
-        params = unsign(signed_params)
+        try:
+            params = unsign(signed_params)
+        except (SignatureExpired, BadSignature):
+            return render_to_response(
+                "sentry/integrations/msteams-expired-link.html",
+                request=request,
+            )
 
         organization, integration, idp = get_identity(
             request.user, params["organization_id"], params["integration_id"]
@@ -49,7 +56,10 @@ class MsTeamsLinkIdentityView(BaseView):
         defaults = {"status": IdentityStatus.VALID, "date_verified": timezone.now()}
         try:
             identity, created = Identity.objects.get_or_create(
-                idp=idp, user=request.user, external_id=params["teams_user_id"], defaults=defaults
+                idp=idp,
+                user=request.user,
+                external_id=params["teams_user_id"],
+                defaults=defaults,
             )
             if not created:
                 identity.update(**defaults)
@@ -64,5 +74,7 @@ class MsTeamsLinkIdentityView(BaseView):
         client.send_card(user_conversation_id, card)
 
         return render_to_response(
-            "sentry/msteams-linked.html", request=request, context={"team_id": params["team_id"]}
+            "sentry/integrations/msteams-linked.html",
+            request=request,
+            context={"team_id": params["team_id"]},
         )

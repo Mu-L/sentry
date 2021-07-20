@@ -6,9 +6,9 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from exam import patcher
 from freezegun import freeze_time
-from sentry.utils.compat.mock import Mock, patch
 
 from sentry.db.models.manager import BaseManager
+from sentry.incidents.logic import delete_alert_rule, update_alert_rule
 from sentry.incidents.models import (
     AlertRule,
     AlertRuleActivity,
@@ -22,8 +22,8 @@ from sentry.incidents.models import (
     IncidentType,
     TriggerStatus,
 )
-from sentry.incidents.logic import delete_alert_rule, update_alert_rule
 from sentry.testutils import TestCase
+from sentry.utils.compat.mock import Mock, patch
 
 
 class FetchForOrganizationTest(TestCase):
@@ -98,7 +98,10 @@ class IncidentClearSubscriptionCacheTest(TestCase):
             cache.get(AlertRule.objects.CACHE_SUBSCRIPTION_KEY % self.subscription.id)
             == self.alert_rule
         )
+        subscription_id = self.subscription.id
         self.subscription.delete()
+        # Add the subscription id back in so we don't use `None` in the lookup check.
+        self.subscription.id = subscription_id
         with self.assertRaises(AlertRule.DoesNotExist):
             AlertRule.objects.get_for_subscription(self.subscription)
 

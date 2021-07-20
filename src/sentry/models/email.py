@@ -2,8 +2,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 
-from sentry.db.models import Model, sane_repr
-from sentry.db.models import CIEmailField
+from sentry.db.models import CIEmailField, Model, sane_repr
 
 
 class Email(Model):
@@ -12,7 +11,7 @@ class Email(Model):
     UserEmail represents whether a given user account has access to that email.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     email = CIEmailField(_("email address"), unique=True, max_length=75)
     date_added = models.DateTimeField(default=timezone.now)

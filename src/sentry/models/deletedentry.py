@@ -1,11 +1,11 @@
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import Model, BoundedBigIntegerField
+from sentry.db.models import BoundedBigIntegerField, Model
 
 
 class DeletedEntry(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     actor_label = models.CharField(max_length=64, null=True)
     # if the entry was created via a user

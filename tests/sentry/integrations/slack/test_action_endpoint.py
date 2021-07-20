@@ -1,26 +1,29 @@
+from urllib.parse import parse_qs
+
 import responses
 
-from urllib.parse import parse_qs
-from sentry.utils.compat.mock import patch
-
 from sentry.api import client
+from sentry.integrations.slack.endpoints.action import (
+    LINK_IDENTITY_MESSAGE,
+    UNLINK_IDENTITY_MESSAGE,
+)
+from sentry.integrations.slack.views.link_identity import build_linking_url
+from sentry.integrations.slack.views.unlink_identity import build_unlinking_url
 from sentry.models import (
-    Integration,
-    OrganizationIntegration,
+    AuthIdentity,
+    AuthProvider,
+    Group,
+    GroupAssignee,
+    GroupStatus,
     Identity,
     IdentityProvider,
     IdentityStatus,
-    Group,
-    GroupStatus,
-    GroupAssignee,
-    AuthProvider,
-    AuthIdentity,
+    Integration,
+    OrganizationIntegration,
 )
 from sentry.testutils import APITestCase
 from sentry.utils import json
-from sentry.integrations.slack.action_endpoint import LINK_IDENTITY_MESSAGE, UNLINK_IDENTITY_MESSAGE
-from sentry.integrations.slack.link_identity import build_linking_url
-from sentry.integrations.slack.unlink_identity import build_unlinking_url
+from sentry.utils.compat.mock import patch
 
 
 class BaseEventTest(APITestCase):
@@ -101,8 +104,9 @@ class BaseEventTest(APITestCase):
 
 
 class StatusActionTest(BaseEventTest):
-    @patch("sentry.integrations.slack.link_identity.sign")
+    @patch("sentry.integrations.slack.views.sign")
     def test_ask_linking(self, sign):
+        """Patching out `sign` to prevent flakiness from timestamp mismatch."""
         sign.return_value = "signed_parameters"
 
         resp = self.post_webhook(slack_user={"id": "invalid-id", "domain": "example"})

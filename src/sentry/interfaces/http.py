@@ -3,16 +3,16 @@ from sentry.utils.compat import map
 __all__ = ("Http",)
 
 import re
-
-from django.utils.translation import ugettext as _
-from django.utils.http import urlencode
 from urllib.parse import parse_qsl
 
+from django.utils.http import urlencode
+from django.utils.translation import ugettext as _
+
 from sentry.interfaces.base import Interface
-from sentry.utils.json import prune_empty_keys
 from sentry.utils import json
-from sentry.utils.strings import to_unicode
+from sentry.utils.json import prune_empty_keys
 from sentry.utils.safe import get_path
+from sentry.utils.strings import to_unicode
 from sentry.web.helpers import render_to_string
 
 # Instead of relying on a list of hardcoded methods, just loosely match
@@ -113,7 +113,7 @@ class Http(Interface):
     FORM_TYPE = "application/x-www-form-urlencoded"
 
     @classmethod
-    def to_python(cls, data):
+    def to_python(cls, data, **kwargs):
         data.setdefault("query_string", [])
         for key in (
             "method",
@@ -126,7 +126,8 @@ class Http(Interface):
             "inferred_content_type",
         ):
             data.setdefault(key, None)
-        return cls(**data)
+
+        return super().to_python(data, **kwargs)
 
     def to_json(self):
         return prune_empty_keys(

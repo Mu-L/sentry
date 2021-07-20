@@ -1,33 +1,34 @@
-from sentry import http, options, features
-
-from sentry.identity.oauth2 import OAuth2Provider, OAuth2LoginView, OAuth2CallbackView
+from sentry import features, http, options
+from sentry.identity.oauth2 import OAuth2CallbackView, OAuth2LoginView, OAuth2Provider
 from sentry.utils.http import absolute_uri
 
 
 def get_user_info(access_token):
-    session = http.build_session()
-    resp = session.get(
-        "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=1.0",
-        headers={"Accept": "application/json", "Authorization": "bearer %s" % access_token},
-    )
-    resp.raise_for_status()
-    user = resp.json()
-    user["uuid"] = user["id"]
+    with http.build_session() as session:
+        resp = session.get(
+            "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=1.0",
+            headers={"Accept": "application/json", "Authorization": f"bearer {access_token}"},
+        )
+        resp.raise_for_status()
 
-    resp = session.get(
-        "https://app.vssps.visualstudio.com/_apis/connectionData/",
-        headers={"Accept": "application/json", "Authorization": "bearer %s" % access_token},
-    )
-    resp.raise_for_status()
-    # NOTE (from Microsoft PM):
-    # The "descriptor" is the universal identifier for a given user and is consistent across
-    # all VSTS accounts (organizations). The "id" field for the same user can be different for
-    # the same user in different places, so the "descriptor" is the best identifier for a user.
-    # This is returned in most/all of the VSTS REST APIs at this point (except for the
-    # profiles/me API above). To get the current user's descriptor, we call the "connection data"
-    # REST API (this assumes we are authenticating with an access token issued to the user).
-    # We will also see descriptors returned for every user in the "Get users" (Graph) REST API.
-    user["id"] = resp.json()["authenticatedUser"]["subjectDescriptor"]
+        user = resp.json()
+        user["uuid"] = user["id"]
+
+        resp = session.get(
+            "https://app.vssps.visualstudio.com/_apis/connectionData/",
+            headers={"Accept": "application/json", "Authorization": f"bearer {access_token}"},
+        )
+        resp.raise_for_status()
+
+        # NOTE (from Microsoft PM):
+        # The "descriptor" is the universal identifier for a given user and is consistent across
+        # all VSTS accounts (organizations). The "id" field for the same user can be different for
+        # the same user in different places, so the "descriptor" is the best identifier for a user.
+        # This is returned in most/all of the VSTS REST APIs at this point (except for the
+        # profiles/me API above). To get the current user's descriptor, we call the "connection data"
+        # REST API (this assumes we are authenticating with an access token issued to the user).
+        # We will also see descriptors returned for every user in the "Get users" (Graph) REST API.
+        user["id"] = resp.json()["authenticatedUser"]["subjectDescriptor"]
 
     return user
 
@@ -115,10 +116,11 @@ class VSTSIdentityProvider(OAuth2Provider):
 
 class VSTSOAuth2CallbackView(OAuth2CallbackView):
     def exchange_token(self, request, pipeline, code):
-        from sentry.http import safe_urlopen, safe_urlread
-        from sentry.utils.http import absolute_uri
         from urllib.parse import parse_qsl
+
+        from sentry.http import safe_urlopen, safe_urlread
         from sentry.utils import json
+        from sentry.utils.http import absolute_uri
 
         req = safe_urlopen(
             url=self.access_token_url,

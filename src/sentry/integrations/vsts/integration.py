@@ -1,37 +1,37 @@
-from time import time
 import logging
 import re
+from time import time
 
 from django import forms
 from django.utils.translation import ugettext as _
 
-from sentry import http, features
+from sentry import features, http
 from sentry.auth.exceptions import IdentityNotValid
 from sentry.constants import ObjectStatus
+from sentry.identity.pipeline import IdentityProviderPipeline
+from sentry.identity.vsts import get_user_info, use_limited_scopes
+from sentry.integrations import (
+    FeatureDescription,
+    IntegrationFeatures,
+    IntegrationInstallation,
+    IntegrationMetadata,
+    IntegrationProvider,
+)
+from sentry.integrations.repositories import RepositoryMixin
+from sentry.integrations.vsts.issues import VstsIssueSync
+from sentry.models import Integration as IntegrationModel
 from sentry.models import (
-    Integration as IntegrationModel,
     IntegrationExternalProject,
     Organization,
     OrganizationIntegration,
+    Repository,
 )
-from sentry.integrations import (
-    IntegrationInstallation,
-    IntegrationFeatures,
-    IntegrationProvider,
-    IntegrationMetadata,
-    FeatureDescription,
-)
+from sentry.pipeline import NestedPipelineView, PipelineView
 from sentry.shared_integrations.exceptions import ApiError, IntegrationError
-from sentry.integrations.repositories import RepositoryMixin
-from sentry.integrations.vsts.issues import VstsIssueSync
-from sentry.models import Repository
-from sentry.pipeline import NestedPipelineView
-from sentry.identity.pipeline import IdentityProviderPipeline
-from sentry.identity.vsts import get_user_info, use_limited_scopes
-from sentry.pipeline import PipelineView
-from sentry.web.helpers import render_to_response
 from sentry.tasks.integrations import migrate_repo
 from sentry.utils.http import absolute_uri
+from sentry.web.helpers import render_to_response
+
 from .client import VstsApiClient
 from .repository import VstsRepositoryProvider
 from .webhooks import WorkItemWebhook
@@ -87,7 +87,7 @@ metadata = IntegrationMetadata(
     features=FEATURES,
     author="The Sentry Team",
     noun=_("Installation"),
-    issue_url="https://github.com/getsentry/sentry/issues/new?assignees=&labels=Component:%20Integrations&template=bug_report.md&title=Azure%20DevOps%20Integration%20Problem",
+    issue_url="https://github.com/getsentry/sentry/issues/new?assignees=&labels=Component:%20Integrations&template=bug.yml&title=Azure%20DevOps%20Integration%20Problem",
     source_url="https://github.com/getsentry/sentry/tree/master/src/sentry/integrations/vsts",
     aspects={},
 )
@@ -208,6 +208,7 @@ class VstsIntegration(IntegrationInstallation, RepositoryMixin, VstsIssueSync):
                     "on_unresolve": _("When unresolved"),
                 },
                 "mappedColumnLabel": _("Azure DevOps Project"),
+                "formatMessageValue": False,
             },
             {
                 "name": self.outbound_assignee_key,
@@ -439,15 +440,15 @@ class VstsIntegrationProvider(IntegrationProvider):
 
     @classmethod
     def get_base_url(cls, access_token, account_id):
-        session = http.build_session()
         url = VstsIntegrationProvider.VSTS_ACCOUNT_LOOKUP_URL % account_id
-        response = session.get(
-            url,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer %s" % access_token,
-            },
-        )
+        with http.build_session() as session:
+            response = session.get(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}",
+                },
+            )
         if response.status_code == 200:
             return response.json()["locationUrl"]
         return None
@@ -507,17 +508,15 @@ class AccountConfigView(PipelineView):
         return None
 
     def get_accounts(self, access_token, user_id):
-        session = http.build_session()
-        url = (
-            "https://app.vssps.visualstudio.com/_apis/accounts?ownerId=%s&api-version=4.1" % user_id
-        )
-        response = session.get(
-            url,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer %s" % access_token,
-            },
-        )
+        url = f"https://app.vssps.visualstudio.com/_apis/accounts?ownerId={user_id}&api-version=4.1"
+        with http.build_session() as session:
+            response = session.get(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}",
+                },
+            )
         if response.status_code == 200:
             return response.json()
         return None

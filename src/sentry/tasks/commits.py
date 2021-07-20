@@ -1,20 +1,20 @@
 import logging
 
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.exceptions import InvalidIdentity, PluginError
-from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.models import (
     Deploy,
     LatestRepoReleaseEnvironment,
+    OrganizationMember,
     Release,
     ReleaseCommitError,
     ReleaseHeadCommit,
     Repository,
     User,
-    OrganizationMember,
 )
 from sentry.plugins.base import bindings
+from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.tasks.base import instrumented_task, retry
 from sentry.utils.email import MessageBuilder
 from sentry.utils.http import absolute_uri
@@ -190,7 +190,7 @@ def fetch_commits(release_id, user_id, refs, prev_release_id=None, **kwargs):
             organization_id=release.organization_id, release=release, notified=False
         ).values_list("id", "environment_id", "date_finished")
 
-        # XXX(dcramer): i dont know why this would have multiple environments, but for
+        # XXX(dcramer): i don't know why this would have multiple environments, but for
         # our sanity lets assume it can
         pending_notifications = []
         last_deploy_per_environment = {}

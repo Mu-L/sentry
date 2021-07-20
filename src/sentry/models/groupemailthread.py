@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import Model, FlexibleForeignKey, BaseManager, sane_repr
+from sentry.db.models import BaseManager, FlexibleForeignKey, Model, sane_repr
 
 
 class GroupEmailThread(Model):
@@ -12,7 +12,7 @@ class GroupEmailThread(Model):
     for email threading.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     email = models.EmailField(max_length=75)
     project = FlexibleForeignKey("sentry.Project", related_name="groupemail_set")

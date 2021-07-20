@@ -1,23 +1,22 @@
 import unittest
-
 from datetime import datetime, timedelta
-from django.utils import timezone
 
 import pytest
 import pytz
+from django.utils import timezone
 
-from sentry.models import GroupRelease, Release, Project
+from sentry.models import GroupRelease, Project, Release
 from sentry.testutils import TestCase
 from sentry.utils.compat import mock
 from sentry.utils.snuba import (
-    _prepare_query_params,
-    get_query_params_to_update_for_projects,
-    get_snuba_translators,
-    get_json_type,
-    get_snuba_column_name,
     Dataset,
     SnubaQueryParams,
     UnqualifiedQueryError,
+    _prepare_query_params,
+    get_json_type,
+    get_query_params_to_update_for_projects,
+    get_snuba_column_name,
+    get_snuba_translators,
     quantize_time,
 )
 
@@ -154,6 +153,8 @@ class SnubaUtilsTest(TestCase):
         assert get_json_type("Float64") == "number"
         assert get_json_type("Nullable(Float64)") == "number"
         assert get_json_type("Array(String)") == "array"
+        assert get_json_type("DateTime") == "date"
+        assert get_json_type("DateTime('UTC')") == "date"
         assert get_json_type("Char") == "string"
         assert get_json_type("unknown") == "string"
         assert get_json_type("") == "string"
@@ -182,6 +183,40 @@ class SnubaUtilsTest(TestCase):
         assert get_snuba_column_name("measurements.KEY", Dataset.Discover) == "measurements[key]"
         assert (
             get_snuba_column_name("measurements.KEY", Dataset.Transactions) == "measurements[key]"
+        )
+
+        # span op breakdowns are not available on the Events dataset, so it's seen as a tag
+        assert (
+            get_snuba_column_name("span_op_breakdowns_key", Dataset.Events)
+            == "tags[span_op_breakdowns_key]"
+        )
+        assert (
+            get_snuba_column_name("span_op_breakdowns.key", Dataset.Events)
+            == "tags[span_op_breakdowns.key]"
+        )
+
+        # span op breakdowns are available on the Discover and Transactions dataset, so its parsed as such
+        assert (
+            get_snuba_column_name("span_op_breakdowns_key", Dataset.Discover)
+            == "span_op_breakdowns.key"
+        )
+        assert (
+            get_snuba_column_name("span_op_breakdowns_key", Dataset.Transactions)
+            == "span_op_breakdowns.key"
+        )
+        assert get_snuba_column_name("spans.key", Dataset.Discover) == "span_op_breakdowns[ops.key]"
+        assert (
+            get_snuba_column_name("spans.key", Dataset.Transactions)
+            == "span_op_breakdowns[ops.key]"
+        )
+        assert (
+            get_snuba_column_name("spans.total.time", Dataset.Transactions)
+            == "span_op_breakdowns[total.time]"
+        )
+        assert get_snuba_column_name("spans.KEY", Dataset.Discover) == "span_op_breakdowns[ops.key]"
+        assert (
+            get_snuba_column_name("spans.KEY", Dataset.Transactions)
+            == "span_op_breakdowns[ops.key]"
         )
 
 
@@ -288,7 +323,7 @@ class QuantizeTimeTest(unittest.TestCase):
         assert changed_on_hour == 1
 
     def test_quantize_time_matches_duration(self):
-        """ The number of seconds between keys changing should match duration """
+        """The number of seconds between keys changing should match duration"""
         previous_key = quantize_time(self.now, 0, duration=10)
         changes = []
         for i in range(21):

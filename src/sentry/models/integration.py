@@ -1,25 +1,23 @@
 import logging
-from enum import Enum
 
-from django.db import models, IntegrityError
+from django.db import IntegrityError, models
 from django.utils import timezone
 
 from sentry.constants import ObjectStatus
 from sentry.db.models import (
     BoundedPositiveIntegerField,
+    DefaultFieldsModel,
     EncryptedJsonField,
     FlexibleForeignKey,
     Model,
-    DefaultFieldsModel,
 )
 from sentry.signals import integration_added
-
 
 logger = logging.getLogger(__name__)
 
 
 class PagerDutyService(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     organization_integration = FlexibleForeignKey("sentry.OrganizationIntegration")
     integration_key = models.CharField(max_length=255)
@@ -32,7 +30,7 @@ class PagerDutyService(DefaultFieldsModel):
 
 
 class IntegrationExternalProject(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     organization_integration_id = BoundedPositiveIntegerField(db_index=True)
     date_added = models.DateTimeField(default=timezone.now)
@@ -48,7 +46,7 @@ class IntegrationExternalProject(DefaultFieldsModel):
 
 
 class RepositoryProjectPathConfig(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     repository = FlexibleForeignKey("sentry.Repository")
     project = FlexibleForeignKey("sentry.Project", db_constraint=False)
@@ -63,57 +61,8 @@ class RepositoryProjectPathConfig(DefaultFieldsModel):
         unique_together = (("project", "stack_root"),)
 
 
-class ExternalProviders(Enum):
-    GITHUB = 0
-    GITLAB = 1
-
-
-EXTERNAL_PROVIDERS = {
-    ExternalProviders.GITHUB: "github",
-    ExternalProviders.GITLAB: "gitlab",
-}
-
-
-class ExternalTeam(DefaultFieldsModel):
-    __core__ = False
-
-    team = FlexibleForeignKey("sentry.Team")
-    provider = BoundedPositiveIntegerField(
-        choices=(
-            (ExternalProviders.GITHUB, "github"),
-            (ExternalProviders.GITLAB, "gitlab"),
-        ),
-    )
-    # external_id => the Github/Gitlab team name. Column name is vague to be reused for more external team identities.
-    external_id = models.TextField()
-
-    class Meta:
-        app_label = "sentry"
-        db_table = "sentry_externalteam"
-        unique_together = (("team", "provider", "external_id"),)
-
-
-class ExternalUser(DefaultFieldsModel):
-    __core__ = False
-
-    user = FlexibleForeignKey("sentry.User")
-    provider = BoundedPositiveIntegerField(
-        choices=(
-            (ExternalProviders.GITHUB, "github"),
-            (ExternalProviders.GITLAB, "gitlab"),
-        ),
-    )
-    # external_id => the Github/Gitlab username. Column name is vague to be reused for more external user identities.
-    external_id = models.TextField()
-
-    class Meta:
-        app_label = "sentry"
-        db_table = "sentry_externaluser"
-        unique_together = (("user", "provider", "external_id"),)
-
-
 class OrganizationIntegration(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     organization = FlexibleForeignKey("sentry.Organization")
     integration = FlexibleForeignKey("sentry.Integration")
@@ -133,7 +82,7 @@ class OrganizationIntegration(DefaultFieldsModel):
 # TODO(epurkhiser): This is deprecated and will be removed soon. Do not use
 # Project Integrations.
 class ProjectIntegration(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     project = FlexibleForeignKey("sentry.Project")
     integration = FlexibleForeignKey("sentry.Integration")
@@ -146,7 +95,7 @@ class ProjectIntegration(Model):
 
 
 class Integration(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     organizations = models.ManyToManyField(
         "sentry.Organization", related_name="integrations", through=OrganizationIntegration
@@ -212,3 +161,7 @@ class Integration(DefaultFieldsModel):
             )
 
             return org_integration
+
+
+# REQUIRED for migrations to run
+from sentry.types.integrations import ExternalProviders  # NOQA

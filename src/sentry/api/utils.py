@@ -1,11 +1,15 @@
+import logging
 from datetime import timedelta
 
-import math
 from django.utils import timezone
 
-from sentry.search.utils import parse_datetime_string, InvalidQuery
-from sentry.utils.dates import parse_stats_period, to_timestamp, to_datetime
-from sentry.constants import MAX_ROLLUP_POINTS
+from sentry.auth.access import get_cached_organization_member
+from sentry.auth.superuser import is_active_superuser
+from sentry.models import OrganizationMember
+from sentry.search.utils import InvalidQuery, parse_datetime_string
+from sentry.utils.dates import parse_stats_period
+
+logger = logging.getLogger(__name__)
 
 MAX_STATS_PERIOD = timedelta(days=90)
 
@@ -77,54 +81,28 @@ def get_date_range_from_params(params, optional=False):
     elif optional:
         return None, None
 
-    if start > end:
+    if start >= end:
         raise InvalidParams("start must be before end")
 
     return start, end
 
 
-def get_date_range_rollup_from_params(
-    params,
-    minimum_interval="1h",
-    default_interval="",
-    round_range=False,
-    max_points=MAX_ROLLUP_POINTS,
-):
-    """
-    Similar to `get_date_range_from_params`, but this also parses and validates
-    an `interval`, as `get_rollup_from_request` would do.
+def is_member_disabled_from_limit(request, organization):
+    user = request.user
 
-    This also optionally rounds the returned range to the given `interval`.
-    The rounding uses integer arithmetic on unix timestamps, so might yield
-    unexpected results when the interval is > 1d.
-    """
-    minimum_interval = parse_stats_period(minimum_interval).total_seconds()
-    interval = parse_stats_period(params.get("interval", default_interval))
-    interval = minimum_interval if interval is None else interval.total_seconds()
-    if interval <= 0:
-        raise InvalidParams("Interval cannot result in a zero duration.")
+    # never limit sentry apps
+    if getattr(user, "is_sentry_app", False):
+        return False
 
-    # round the interval up to the minimum
-    interval = int(minimum_interval * math.ceil(interval / minimum_interval))
+    # don't limit super users
+    if is_active_superuser(request):
+        return False
 
-    start, end = get_date_range_from_params(params)
-    date_range = end - start
-
-    # round the range up to a multiple of the interval
-    if round_range:
-        date_range = timedelta(
-            seconds=int(interval * math.ceil(date_range.total_seconds() / interval))
-        )
-
-    if date_range.total_seconds() / interval > max_points:
-        raise InvalidParams(
-            "Your interval and date range would create too many results. "
-            "Use a larger interval, or a smaller date range."
-        )
-
-    if round_range:
-        end_ts = int(interval * math.ceil(to_timestamp(end) / interval))
-        end = to_datetime(end_ts)
-        start = end - date_range
-
-    return start, end, interval
+    # must be a simple user at this point
+    try:
+        member = get_cached_organization_member(user.id, organization.id)
+    except OrganizationMember.DoesNotExist:
+        # if org member doesn't exist, we should be getting an auth error later
+        return False
+    else:
+        return member.flags["member-limit:restricted"]

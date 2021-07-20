@@ -1,6 +1,7 @@
+from urllib.parse import urlencode
+
 from django.conf import settings
 from django.views.generic import View
-from urllib.parse import urlencode
 
 from sentry.models import ProjectKey
 from sentry.web.helpers import render_to_response
@@ -15,8 +16,8 @@ class DebugErrorPageEmbedView(View):
             "query_params": urlencode(
                 {
                     "dsn": self._get_project_key().dsn_public,
-                    "event_id": "342a3d7f690a49f8bd7c4cf0e61a9ded",
-                    "options": dict(**request.GET),
+                    "eventId": "342a3d7f690a49f8bd7c4cf0e61a9ded",
+                    **request.GET,
                 }
             )
         }

@@ -1,10 +1,13 @@
 import inspect
 from datetime import timedelta
+
 from django.utils import timezone
+from django.utils.deprecation import MiddlewareMixin
 
 
-class UserActiveMiddleware:
+class UserActiveMiddleware(MiddlewareMixin):
     disallowed_paths = (
+        "sentry.web.frontend.generic.unversioned_static_media",
         "sentry.web.frontend.generic.static_media",
         "sentry.web.frontend.organization_avatar",
         "sentry.web.frontend.project_avatar",
@@ -26,7 +29,7 @@ class UserActiveMiddleware:
         if path.startswith(self.disallowed_paths):
             return
 
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return
 
         now = timezone.now()

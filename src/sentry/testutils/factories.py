@@ -1,23 +1,25 @@
-from django.conf import settings
-
 import io
 import os
-import petname
 import random
 import warnings
 from binascii import hexlify
+from datetime import datetime
 from hashlib import sha1
-from uuid import uuid4
 from importlib import import_module
+from typing import Any, Optional, Sequence
+from uuid import uuid4
 
+import petname
+from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
-from django.utils.text import slugify
 from django.utils.encoding import force_text
+from django.utils.text import slugify
 
+from sentry.constants import SentryAppInstallationStatus, SentryAppStatus
 from sentry.event_manager import EventManager
-from sentry.constants import SentryAppStatus, SentryAppInstallationStatus
 from sentry.incidents.logic import (
     create_alert_rule,
     create_alert_rule_trigger,
@@ -27,53 +29,58 @@ from sentry.incidents.models import (
     AlertRuleThresholdType,
     AlertRuleTriggerAction,
     Incident,
-    IncidentTrigger,
     IncidentActivity,
     IncidentProject,
     IncidentSeen,
+    IncidentTrigger,
     IncidentType,
     TriggerStatus,
 )
 from sentry.mediators import (
-    sentry_apps,
-    sentry_app_installations,
     sentry_app_installation_tokens,
+    sentry_app_installations,
+    sentry_apps,
     service_hooks,
 )
 from sentry.models import (
     Activity,
+    Commit,
+    CommitAuthor,
+    CommitFileChange,
     Environment,
+    EventAttachment,
+    ExternalActor,
+    ExternalIssue,
+    File,
     Group,
+    GroupLink,
     Organization,
     OrganizationMember,
     OrganizationMemberTeam,
+    PlatformExternalIssue,
     Project,
     ProjectBookmark,
+    ProjectCodeOwners,
+    ProjectDebugFile,
+    Release,
+    ReleaseCommit,
+    ReleaseEnvironment,
+    ReleaseFile,
+    Repository,
+    RepositoryProjectPathConfig,
+    Rule,
     Team,
     User,
     UserEmail,
-    Release,
-    Commit,
-    ReleaseCommit,
-    CommitAuthor,
-    Repository,
-    CommitFileChange,
-    ProjectDebugFile,
-    File,
     UserPermission,
-    EventAttachment,
     UserReport,
-    PlatformExternalIssue,
-    ExternalIssue,
-    GroupLink,
-    ReleaseFile,
-    RepositoryProjectPathConfig,
-    Rule,
 )
 from sentry.models.integrationfeature import Feature, IntegrationFeature
+from sentry.models.releasefile import update_artifact_index
 from sentry.signals import project_created
 from sentry.snuba.models import QueryDatasets
-from sentry.utils import loremipsum, json
+from sentry.types.integrations import ExternalProviders
+from sentry.utils import json, loremipsum
 
 
 def get_fixture_path(name):
@@ -209,12 +216,15 @@ DEFAULT_EVENT_DATA = {
 }
 
 
-def _patch_artifact_manifest(path, org, release, project=None):
-    manifest = json.loads(open(path, "rb").read())
+def _patch_artifact_manifest(path, org, release, project=None, extra_files=None):
+    with open(path, "rb") as fp:
+        manifest = json.load(fp)
     manifest["org"] = org
     manifest["release"] = release
     if project:
         manifest["project"] = project
+    for path in extra_files or {}:
+        manifest["files"][path] = {"url": path}
     return json.dumps(manifest)
 
 
@@ -348,7 +358,14 @@ class Factories:
         return project.key_set.get_or_create()[0]
 
     @staticmethod
-    def create_release(project, user=None, version=None, date_added=None, additional_projects=None):
+    def create_release(
+        project: Project,
+        user: Optional[User] = None,
+        version: Optional[str] = None,
+        date_added: Optional[datetime] = None,
+        additional_projects: Optional[Sequence[Project]] = None,
+        environments: Optional[Sequence[Environment]] = None,
+    ):
         if version is None:
             version = force_text(hexlify(os.urandom(20)))
 
@@ -365,6 +382,11 @@ class Factories:
         release.add_project(project)
         for additional_project in additional_projects:
             release.add_project(additional_project)
+
+        for environment in environments or []:
+            ReleaseEnvironment.objects.create(
+                organization=project.organization, release=release, environment=environment
+            )
 
         Activity.objects.create(
             type=Activity.RELEASE,
@@ -392,7 +414,7 @@ class Factories:
         return release
 
     @staticmethod
-    def create_release_file(release, file=None, name=None, dist=None):
+    def create_release_file(release_id, file=None, name=None, dist_id=None):
         if file is None:
             file = Factories.create_file(
                 name="log.txt",
@@ -404,33 +426,52 @@ class Factories:
         if name is None:
             name = file.name
 
+        organization_id = Release.objects.get(pk=release_id).organization.id
+
         return ReleaseFile.objects.create(
-            organization=release.organization, release=release, name=name, file=file, dist=dist
+            organization_id=organization_id,
+            release_id=release_id,
+            name=name,
+            file=file,
+            dist_id=dist_id,
         )
 
     @staticmethod
-    def create_artifact_bundle(org, release, project=None):
+    def create_artifact_bundle(org, release, project=None, extra_files=None):
         import zipfile
 
         bundle = io.BytesIO()
         bundle_dir = get_fixture_path("artifact_bundle")
         with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as zipfile:
+            for path, content in (extra_files or {}).items():
+                zipfile.writestr(path, content)
             for path, _, files in os.walk(bundle_dir):
                 for filename in files:
                     fullpath = os.path.join(path, filename)
                     relpath = os.path.relpath(fullpath, bundle_dir)
                     if filename == "manifest.json":
-                        manifest = _patch_artifact_manifest(fullpath, org, release, project)
+                        manifest = _patch_artifact_manifest(
+                            fullpath, org, release, project, extra_files
+                        )
                         zipfile.writestr(relpath, manifest)
                     else:
                         zipfile.write(fullpath, relpath)
 
         return bundle.getvalue()
 
+    @classmethod
+    def create_release_archive(cls, org, release: str, project=None, dist=None):
+        bundle = cls.create_artifact_bundle(org, release, project)
+        file_ = File.objects.create(name="release-artifacts.zip")
+        file_.putfile(ContentFile(bundle))
+        release = Release.objects.get(organization__slug=org, version=release)
+        return update_artifact_index(release, dist, file_)
+
     @staticmethod
     def create_code_mapping(project, repo=None, **kwargs):
         kwargs.setdefault("stack_root", "")
         kwargs.setdefault("source_root", "")
+        kwargs.setdefault("default_branch", "master")
 
         if not repo:
             repo = Factories.create_repo(project=project)
@@ -622,7 +663,7 @@ class Factories:
         return ProjectDebugFile.objects.create(
             debug_id=debug_id,
             code_id=code_id,
-            project=project,
+            project_id=project.id,
             object_name=object_name,
             cpu_name=cpu_name or "x86_64",
             file=file,
@@ -878,6 +919,7 @@ class Factories:
         organization,
         projects,
         name=None,
+        owner=None,
         query="level:error",
         aggregate="count()",
         time_window=10,
@@ -904,6 +946,7 @@ class Factories:
             time_window,
             threshold_type,
             threshold_period,
+            owner=owner,
             resolve_threshold=resolve_threshold,
             dataset=dataset,
             environment=environment,
@@ -945,4 +988,26 @@ class Factories:
     ):
         return create_alert_rule_trigger_action(
             trigger, type, target_type, target_identifier, integration, sentry_app
+        )
+
+    @staticmethod
+    def create_external_user(user: User, **kwargs: Any) -> ExternalActor:
+        kwargs.setdefault("provider", ExternalProviders.GITHUB.value)
+        kwargs.setdefault("external_name", "")
+
+        return ExternalActor.objects.create(actor=user.actor, **kwargs)
+
+    @staticmethod
+    def create_external_team(team: Team, **kwargs: Any) -> ExternalActor:
+        kwargs.setdefault("provider", ExternalProviders.GITHUB.value)
+        kwargs.setdefault("external_name", "@getsentry/ecosystem")
+
+        return ExternalActor.objects.create(actor=team.actor, **kwargs)
+
+    @staticmethod
+    def create_codeowners(project, code_mapping, **kwargs):
+        kwargs.setdefault("raw", "")
+
+        return ProjectCodeOwners.objects.create(
+            project=project, repository_project_path_config=code_mapping, **kwargs
         )

@@ -1,4 +1,5 @@
 from datetime import datetime
+
 from django.utils import timezone
 
 from sentry.testutils import AcceptanceTestCase, SnubaTestCase
@@ -77,3 +78,12 @@ class IssueDetailsWorkflowTest(AcceptanceTestCase, SnubaTestCase):
         form.submit()
 
         assert self.page.has_comment("this looks bad")
+
+    def test_mark_reviewed(self):
+        event = self.create_sample_event(platform="python")
+        self.page.visit_issue(self.org.slug, event.group.id)
+        self.page.mark_reviewed()
+
+        res = self.page.api_issue_get(event.group.id)
+        assert res.status_code == 200, res
+        assert "inbox" not in res.data

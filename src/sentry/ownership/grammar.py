@@ -1,8 +1,12 @@
+import re
 from collections import namedtuple
-from parsimonious.grammar import Grammar, NodeVisitor
+from typing import List, Pattern, Tuple
+
 from parsimonious.exceptions import ParseError  # noqa
-from sentry.utils.safe import get_path
+from parsimonious.grammar import Grammar, NodeVisitor
+
 from sentry.utils.glob import glob_match
+from sentry.utils.safe import get_path
 
 __all__ = ("parse_rules", "dump_schema", "load_schema")
 
@@ -20,7 +24,7 @@ rule = _ matcher owners
 
 matcher      = _ matcher_tag any_identifier
 matcher_tag  = (matcher_type sep)?
-matcher_type = "url" / "path" / event_tag
+matcher_type = "url" / "path" / "module" / "codeowners" / event_tag
 
 event_tag   = ~r"tags.[^:]+"
 
@@ -88,9 +92,13 @@ class Matcher(namedtuple("Matcher", "type pattern")):
         if self.type == "url":
             return self.test_url(data)
         elif self.type == "path":
-            return self.test_path(data)
+            return self.test_frames(data, ["filename", "abs_path"])
+        elif self.type == "module":
+            return self.test_frames(data, ["module"])
         elif self.type.startswith("tags."):
             return self.test_tag(data)
+        elif self.type.startswith("codeowners"):
+            return self.test_codeowners(data)
         return False
 
     def test_url(self, data):
@@ -100,14 +108,14 @@ class Matcher(namedtuple("Matcher", "type pattern")):
             return False
         return url and glob_match(url, self.pattern, ignorecase=True)
 
-    def test_path(self, data):
+    def test_frames(self, data, keys):
         for frame in _iter_frames(data):
-            filename = frame.get("filename") or frame.get("abs_path")
+            value = next((frame.get(key) for key in keys if frame.get(key)), None)
 
-            if not filename:
+            if not value:
                 continue
 
-            if glob_match(filename, self.pattern, ignorecase=True, path_normalize=True):
+            if glob_match(value, self.pattern, ignorecase=True, path_normalize=True):
                 return True
 
         return False
@@ -117,6 +125,26 @@ class Matcher(namedtuple("Matcher", "type pattern")):
         for k, v in get_path(data, "tags", filter=True) or ():
             if k == tag and glob_match(v, self.pattern):
                 return True
+        return False
+
+    def test_codeowners(self, data):
+        """
+        Codeowners has a slightly different syntax compared to issue owners
+        As such we need to match it using gitignore logic.
+        See syntax documentation here:
+        https://docs.github.com/en/github/creating-cloning-and-archiving-repositories/creating-a-repository-on-github/about-code-owners
+        """
+        spec = _path_to_regex(self.pattern)
+        keys = ["abs_path"]
+        for frame in _iter_frames(data):
+            value = next((frame.get(key) for key in keys if frame.get(key)), None)
+
+            if not value:
+                continue
+
+            if spec.search(value):
+                return True
+
         return False
 
 
@@ -195,6 +223,94 @@ class OwnershipVisitor(NodeVisitor):
         return children or node
 
 
+def _path_to_regex(pattern: str) -> Pattern[str]:
+    """
+    ported from https://github.com/hmarr/codeowners/blob/d0452091447bd2a29ee508eebc5a79874fb5d4ff/match.go#L33
+    ported from https://github.com/sbdchd/codeowners/blob/6c5e8563f4c675abb098df704e19f4c6b95ff9aa/codeowners/__init__.py#L16
+
+    There are some special cases like backslash that were added
+
+    MIT License
+
+    Copyright (c) 2020 Harry Marr
+    Copyright (c) 2019-2020 Steve Dignam
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+    """
+    regex = ""
+
+    # Special case backslash can match a backslash file or directory
+    if pattern[0] == "\\":
+        return re.compile(r"\\(?:\Z|/)")
+
+    slash_pos = pattern.find("/")
+    anchored = slash_pos > -1 and slash_pos != len(pattern) - 1
+
+    regex += r"\A" if anchored else r"(?:\A|/)"
+
+    matches_dir = pattern[-1] == "/"
+    if matches_dir:
+        pattern = pattern.rstrip("/")
+
+    # patterns ending with "/*" are special. They only match items directly in the directory
+    # not deeper
+    trailing_slash_star = pattern[-1] == "*" and len(pattern) > 1 and pattern[-2] == "/"
+
+    iterator = enumerate(pattern)
+
+    # Anchored paths may or may not start with a slash
+    if anchored and pattern[0] == "/":
+        next(iterator, None)
+        regex += r"/?"
+
+    for i, ch in iterator:
+
+        if ch == "*":
+
+            # Handle double star (**) case properly
+            if i + 1 < len(pattern) and pattern[i + 1] == "*":
+                left_anchored = i == 0
+                leading_slash = i > 0 and pattern[i - 1] == "/"
+                right_anchored = i + 2 == len(pattern)
+                trailing_slash = i + 2 < len(pattern) and pattern[i + 2] == "/"
+
+                if (left_anchored or leading_slash) and (right_anchored or trailing_slash):
+                    regex += ".*"
+
+                    next(iterator, None)
+                    next(iterator, None)
+                    continue
+            regex += "[^/]*"
+        elif ch == "?":
+            regex += "[^/]"
+        else:
+            regex += re.escape(ch)
+
+    if matches_dir:
+        regex += "/"
+    elif trailing_slash_star:
+        regex += r"\Z"
+    else:
+        regex += r"(?:\Z|/)"
+    return re.compile(regex)
+
+
 def _iter_frames(data):
     try:
         yield from get_path(data, "stacktrace", "frames", filter=True) or ()
@@ -229,3 +345,80 @@ def load_schema(schema):
     if schema["$version"] != VERSION:
         raise RuntimeError("Invalid schema $version: %r" % schema["$version"])
     return [Rule.load(r) for r in schema["rules"]]
+
+
+def convert_schema_to_rules_text(schema):
+    rules = load_schema(schema)
+    text = ""
+
+    def owner_prefix(type):
+        if type == "team":
+            return "#"
+        return ""
+
+    for rule in rules:
+        text += f"{rule.matcher.type}:{rule.matcher.pattern} {' '.join([f'{owner_prefix(owner.type)}{owner.identifier}' for owner in rule.owners])}\n"
+
+    return text
+
+
+def parse_code_owners(data: str) -> Tuple[List[str], List[str], List[str]]:
+    """Parse a CODEOWNERS text and returns the list of team names, list of usernames"""
+    teams = []
+    usernames = []
+    emails = []
+    for rule in data.splitlines():
+        if rule.startswith("#") or not len(rule):
+            continue
+
+        _, *assignees = rule.strip().split()
+
+        for assignee in assignees:
+            if "/" not in assignee:
+                if re.match(r"[^@]+@[^@]+\.[^@]+", assignee):
+                    emails.append(assignee)
+                else:
+                    usernames.append(assignee)
+
+            else:
+                teams.append(assignee)
+
+    return teams, usernames, emails
+
+
+def convert_codeowners_syntax(data, associations, code_mapping):
+    """Converts CODEOWNERS text into IssueOwner syntax
+    data: CODEOWNERS text
+    associations: dict of {externalName: sentryName}
+    code_mapping: RepositoryProjectPathConfig object
+    """
+
+    result = ""
+
+    for rule in data.splitlines():
+        if rule.startswith("#") or not len(rule):
+            # We want to preserve comments from CODEOWNERS
+            result += f"{rule}\n"
+            continue
+
+        path, *codeowners = rule.split()
+        sentry_assignees = []
+
+        for owner in codeowners:
+            try:
+                sentry_assignees.append(associations[owner])
+            except KeyError:
+                # We allow users to upload an incomplete codeowner file,
+                # meaning they may not have all the associations mapped.
+                # If this is the case, we simply skip this line when
+                # converting to issue owner syntax
+
+                # TODO(meredith): log and/or collect analytics for when
+                # we skip associations
+                continue
+
+        if sentry_assignees:
+            formatted_path = path.replace(code_mapping.source_root, code_mapping.stack_root, 1)
+            result += f'path:{formatted_path} {" ".join(sentry_assignees)}\n'
+
+    return result

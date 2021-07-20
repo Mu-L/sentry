@@ -1,5 +1,5 @@
-from django.utils import timezone
 import pytz
+from django.utils import timezone
 
 from sentry.testutils import AcceptanceTestCase, SnubaTestCase
 from sentry.testutils.helpers.datetime import before_now
@@ -36,7 +36,6 @@ class OrganizationIncidentsListTest(AcceptanceTestCase, SnubaTestCase):
             self.browser.get(self.path)
             self.browser.wait_until_not(".loading-indicator")
             self.browser.wait_until_not('[data-test-id="loading-placeholder"]')
-            self.browser.wait_until_test_id("incident-sparkline")
             self.browser.snapshot("incidents - list")
 
             details_url = (

@@ -2,12 +2,12 @@ from copy import deepcopy
 
 from exam import fixture
 
-
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models.alert_rule import DetailedAlertRuleSerializer
 from sentry.auth.access import OrganizationGlobalAccess
 from sentry.incidents.endpoints.serializers import AlertRuleSerializer
 from sentry.incidents.models import AlertRule, AlertRuleStatus, Incident, IncidentStatus
+from sentry.models import OrganizationMemberTeam
 from sentry.testutils import APITestCase
 from tests.sentry.incidents.endpoints.test_organization_alert_rule_index import AlertRuleBase
 
@@ -370,6 +370,53 @@ class AlertRuleDetailsPutEndpointTest(AlertRuleDetailsBase, APITestCase):
                 self.organization.slug, alert_rule.id, status_code=404, **serialized_alert_rule
             )
 
+    def test_no_owner(self):
+        self.create_member(
+            user=self.user, organization=self.organization, role="owner", teams=[self.team]
+        )
+
+        self.login_as(self.user)
+        alert_rule = self.alert_rule
+        # We need the IDs to force update instead of create, so we just get the rule using our own API. Like frontend would.
+        serialized_alert_rule = self.get_serialized_alert_rule()
+        serialized_alert_rule["owner"] = None
+
+        with self.feature("organizations:incidents"):
+            resp = self.get_valid_response(
+                self.organization.slug, alert_rule.id, **serialized_alert_rule
+            )
+
+        assert resp.data == serialize(alert_rule, self.user)
+        assert (
+            resp.data["owner"] == self.user.actor.get_actor_identifier()
+        )  # Doesn't unassign yet - TDB in future though
+
+    def test_team_permission(self):
+        # Test ensures you can only edit alerts owned by your team or no one.
+
+        om = self.create_member(
+            user=self.user, organization=self.organization, role="owner", teams=[self.team]
+        )
+        self.login_as(self.user)
+        alert_rule = self.alert_rule
+        alert_rule.owner = self.team.actor
+        alert_rule.save()
+        # We need the IDs to force update instead of create, so we just get the rule using our own API. Like frontend would.
+        serialized_alert_rule = self.get_serialized_alert_rule()
+        OrganizationMemberTeam.objects.filter(
+            organizationmember__user=self.user,
+            team=self.team,
+        ).delete()
+        with self.feature("organizations:incidents"):
+            resp = self.get_response(self.organization.slug, alert_rule.id, **serialized_alert_rule)
+        assert resp.status_code == 403
+        self.create_team_membership(team=self.team, member=om)
+        with self.feature("organizations:incidents"):
+            resp = self.get_valid_response(
+                self.organization.slug, alert_rule.id, **serialized_alert_rule
+            )
+        assert resp.data == serialize(alert_rule, self.user)
+
 
 class AlertRuleDetailsDeleteEndpointTest(AlertRuleDetailsBase, APITestCase):
     method = "delete"
@@ -408,3 +455,24 @@ class AlertRuleDetailsDeleteEndpointTest(AlertRuleDetailsBase, APITestCase):
 
             # We also confirm that the incident is automatically resolved.
             assert Incident.objects.get(id=incident.id).status == IncidentStatus.CLOSED.value
+
+    def test_team_permission(self):
+        # Test ensures you can only delete alerts owned by your team or no one.
+        om = self.create_member(
+            user=self.user, organization=self.organization, role="owner", teams=[self.team]
+        )
+        self.login_as(self.user)
+        alert_rule = self.alert_rule
+        alert_rule.owner = self.team.actor
+        alert_rule.save()
+        # We need the IDs to force update instead of create, so we just get the rule using our own API. Like frontend would.
+        OrganizationMemberTeam.objects.filter(
+            organizationmember__user=self.user,
+            team=self.team,
+        ).delete()
+        with self.feature("organizations:incidents"):
+            resp = self.get_response(self.organization.slug, alert_rule.id)
+        assert resp.status_code == 403
+        self.create_team_membership(team=self.team, member=om)
+        with self.feature("organizations:incidents"):
+            resp = self.get_valid_response(self.organization.slug, alert_rule.id, status_code=204)

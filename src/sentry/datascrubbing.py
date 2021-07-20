@@ -3,7 +3,7 @@ import copy
 import sentry_relay
 from rest_framework import serializers
 
-from sentry.utils import metrics, json
+from sentry.utils import json, metrics
 from sentry.utils.safe import safe_execute
 
 
@@ -20,7 +20,7 @@ def _escape_key(key):
 def get_pii_config(project):
     def _decode(value):
         if value:
-            return safe_execute(json.loads, value)
+            return safe_execute(json.loads, value, _with_transaction=False)
 
     # Order of merging is important here. We want to apply organization rules
     # before project rules. For example:

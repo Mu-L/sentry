@@ -1,11 +1,10 @@
 import logging
 
 from jsonschema import Draft7Validator
-from jsonschema.exceptions import best_match
 from jsonschema.exceptions import ValidationError as SchemaValidationError
+from jsonschema.exceptions import best_match
 
 from sentry.utils import json
-
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +233,7 @@ def validate_ui_element_schema(instance):
     except SchemaValidationError as e:
         raise e
     except Exception as e:
-        logger.warn(
+        logger.warning(
             "Unexpected error validating schema: %s",
             e,
             exc_info=True,

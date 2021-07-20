@@ -1,13 +1,12 @@
 import operator
+from uuid import uuid4
 
 from django.db.models import F
 from django.db.models.expressions import CombinedExpression, Value
-from django.utils.crypto import get_random_string
 from django.template.defaultfilters import slugify
-from uuid import uuid4
+from django.utils.crypto import get_random_string
 
 from sentry.db.exceptions import CannotResolveExpression
-
 
 COMBINED_EXPRESSION_CALLBACKS = {
     CombinedExpression.ADD: operator.add,
@@ -45,11 +44,6 @@ def resolve_combined_expression(instance, node):
     for n in children[1:]:
         runner = op(runner, _resolve(instance, n))
     return runner
-
-
-# TODO(mark) Remove these compatibility aliases once getsentry doesn't use them.
-ExpressionNode = CombinedExpression
-resolve_expression_node = resolve_combined_expression
 
 
 def slugify_instance(inst, label, reserved=(), max_length=30, field_name="slug", *args, **kwargs):

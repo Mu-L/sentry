@@ -1,12 +1,20 @@
 name: 'Sentry Setup'
 description: 'Sets up a Sentry test environment'
 inputs:
+  working-dir:
+    description: 'Directory to do work from'
+    required: false
+    default: '.'
   snuba:
     description: 'Is snuba required?'
     required: false
     default: 'false'
   kafka:
     description: 'Is kafka required?'
+    required: false
+    default: 'false'
+  chartcuterie:
+    description: 'Is chartcuterie required?'
     required: false
     default: 'false'
 
@@ -56,6 +64,7 @@ runs:
         [ "$GITHUB_REF" = "refs/heads/master" ] && echo "PYTEST_SENTRY_ALWAYS_REPORT=1" >> $GITHUB_ENV || true
 
         ### services configuration ###
+        echo "BIGTABLE_EMULATOR_HOST=localhost:8086" >> $GITHUB_ENV
         # Note: some backend tests (e.g. tests/sentry/eventstream/kafka/test_consumer.py) will behave
         # differently if these are set.
         if [ "$NEED_KAFKA" = "true" ]; then
@@ -83,7 +92,12 @@ runs:
 
     - name: Install python dependencies
       shell: bash
+      env:
+        # This is necessary when other repositories (e.g. relay) want to take advantage of this workflow
+        # without needing to fork it. The path needed is the one where setup.py is located
+        WORKDIR: ${{ inputs.workdir }}
       run: |
+        cd "$WORKDIR"
         python setup.py install_egg_info
         pip install wheel # GitHub Actions does not have `wheel` installed by default
         pip install -U -e ".[dev]"
@@ -96,11 +110,16 @@ runs:
       env:
         NEED_KAFKA: ${{ inputs.kafka }}
         NEED_SNUBA: ${{ inputs.snuba }}
+        NEED_CHARTCUTERIE: ${{ inputs.chartcuterie }}
       run: |
         sentry init
 
         # redis, postgres are needed for almost every code path.
         sentry devservices up redis postgres
+
+        if [ "$BIGTABLE_EMULATOR_HOST" ]; then
+          sentry devservices up --skip-only-if bigtable
+        fi
 
         # TODO: Use devservices kafka. See https://github.com/getsentry/sentry/pull/20986#issuecomment-704510570
         if [ "$NEED_KAFKA" = "true" ]; then
@@ -124,6 +143,10 @@ runs:
 
         if [ "$NEED_SNUBA" = "true" ]; then
           sentry devservices up clickhouse snuba
+        fi
+
+        if [ "$NEED_CHARTCUTERIE" = "true" ]; then
+          sentry devservices up --skip-only-if chartcuterie
         fi
 
         docker ps -a

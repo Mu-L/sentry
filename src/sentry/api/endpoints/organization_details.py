@@ -1,11 +1,14 @@
 import logging
-
+from copy import copy
 from datetime import datetime
-
-from pytz import UTC
-from rest_framework import serializers, status
 from uuid import uuid4
 
+from django.db import models, transaction
+from django.db.models.query_utils import DeferredAttribute
+from pytz import UTC
+from rest_framework import serializers, status
+
+from bitfield.types import BitHandler
 from sentry import roles
 from sentry.api.bases.organization import OrganizationEndpoint
 from sentry.api.decorators import sudo_required
@@ -15,10 +18,7 @@ from sentry.api.serializers import serialize
 from sentry.api.serializers.models import organization as org_serializers
 from sentry.api.serializers.models.organization import TrustedRelaySerializer
 from sentry.api.serializers.rest_framework import ListField
-from sentry.constants import (
-    LEGACY_RATE_LIMIT_OPTIONS,
-    RESERVED_ORGANIZATION_SLUGS,
-)
+from sentry.constants import LEGACY_RATE_LIMIT_OPTIONS, RESERVED_ORGANIZATION_SLUGS
 from sentry.datascrubbing import validate_pii_config_update
 from sentry.lang.native.utils import STORE_CRASH_REPORTS_DEFAULT, convert_crashreport_count
 from sentry.models import (
@@ -29,7 +29,11 @@ from sentry.models import (
     OrganizationAvatar,
     OrganizationOption,
     OrganizationStatus,
+    Project,
+    ProjectTransactionThreshold,
+    UserEmail,
 )
+from sentry.models.transaction_threshold import TransactionMetric
 from sentry.tasks.deletion import delete_organization
 from sentry.utils.cache import memoize
 
@@ -37,6 +41,7 @@ ERR_DEFAULT_ORG = "You cannot remove the default organization."
 ERR_NO_USER = "This request requires an authenticated user."
 ERR_NO_2FA = "Cannot require two-factor authentication without personal two-factor enabled."
 ERR_SSO_ENABLED = "Cannot require two-factor authentication with SSO enabled"
+ERR_EMAIL_VERIFICATION = "Cannot require email verification before verifying your email address."
 
 ORG_OPTIONS = (
     # serializer field name, option key name, type, default value
@@ -114,6 +119,9 @@ DELETION_STATUSES = frozenset(
     [OrganizationStatus.PENDING_DELETION, OrganizationStatus.DELETION_IN_PROGRESS]
 )
 
+UNSAVED = object()
+DEFERRED = object()
+
 
 class OrganizationSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=64)
@@ -147,6 +155,7 @@ class OrganizationSerializer(serializers.Serializer):
     scrapeJavaScript = serializers.BooleanField(required=False)
     isEarlyAdopter = serializers.BooleanField(required=False)
     require2FA = serializers.BooleanField(required=False)
+    requireEmailVerification = serializers.BooleanField(required=False)
     trustedRelays = ListField(child=TrustedRelaySerializer(), required=False)
     allowJoinRequests = serializers.BooleanField(required=False)
     relayPiiConfig = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -217,6 +226,13 @@ class OrganizationSerializer(serializers.Serializer):
             raise serializers.ValidationError(ERR_SSO_ENABLED)
         return value
 
+    def validate_requireEmailVerification(self, value):
+        user = self.context["user"]
+        has_verified = UserEmail.get_primary_email(user).is_verified
+        if value and not has_verified:
+            raise serializers.ValidationError(ERR_EMAIL_VERIFICATION)
+        return value
+
     def validate_trustedRelays(self, value):
         from sentry import features
 
@@ -257,7 +273,7 @@ class OrganizationSerializer(serializers.Serializer):
         attrs = super().validate(attrs)
         if attrs.get("avatarType") == "upload":
             has_existing_file = OrganizationAvatar.objects.filter(
-                organization=self.context["organization"], file__isnull=False
+                organization=self.context["organization"], file_id__isnull=False
             ).exists()
             if not has_existing_file and not attrs.get("avatar"):
                 raise serializers.ValidationError(
@@ -317,26 +333,31 @@ class OrganizationSerializer(serializers.Serializer):
         return incoming
 
     def save(self):
+        from sentry import features
+
         org = self.context["organization"]
         changed_data = {}
+        if not hasattr(org, "__data"):
+            update_tracked_data(org)
 
         for key, option, type_, default_value in ORG_OPTIONS:
             if key not in self.initial_data:
                 continue
             try:
                 option_inst = OrganizationOption.objects.get(organization=org, key=option)
+                update_tracked_data(option_inst)
             except OrganizationOption.DoesNotExist:
                 OrganizationOption.objects.set_value(
                     organization=org, key=option, value=type_(self.initial_data[key])
                 )
 
                 if self.initial_data[key] != default_value:
-                    changed_data[key] = "to {}".format(self.initial_data[key])
+                    changed_data[key] = f"to {self.initial_data[key]}"
             else:
                 option_inst.value = self.initial_data[key]
                 # check if ORG_OPTIONS changed
-                if option_inst.has_changed("value"):
-                    old_val = option_inst.old_value("value")
+                if has_changed(option_inst, "value"):
+                    old_val = old_value(option_inst, "value")
                     changed_data[key] = f"from {old_val} to {option_inst.value}"
                 option_inst.save()
 
@@ -354,6 +375,11 @@ class OrganizationSerializer(serializers.Serializer):
             org.flags.early_adopter = self.initial_data["isEarlyAdopter"]
         if "require2FA" in self.initial_data:
             org.flags.require_2fa = self.initial_data["require2FA"]
+        if (
+            features.has("organizations:required-email-verification", org)
+            and "requireEmailVerification" in self.initial_data
+        ):
+            org.flags.require_email_verification = self.initial_data["requireEmailVerification"]
         if "name" in self.initial_data:
             org.name = self.initial_data["name"]
         if "slug" in self.initial_data:
@@ -375,13 +401,13 @@ class OrganizationSerializer(serializers.Serializer):
         # check if fields changed
         for f, v in org_tracked_field.items():
             if f != "flag_field":
-                if org.has_changed(f):
-                    old_val = org.old_value(f)
+                if has_changed(org, f):
+                    old_val = old_value(org, f)
                     changed_data[f] = f"from {old_val} to {v}"
             else:
                 # check if flag fields changed
                 for f, v in org_tracked_field["flag_field"].items():
-                    if org.flag_has_changed(f):
+                    if flag_has_changed(org, f):
                         changed_data[f] = f"to {v}"
 
         org.save()
@@ -393,8 +419,13 @@ class OrganizationSerializer(serializers.Serializer):
                 avatar=self.initial_data.get("avatar"),
                 filename=f"{org.slug}.png",
             )
-        if "require2FA" in self.initial_data and self.initial_data["require2FA"] is True:
+        if self.initial_data.get("require2FA") is True:
             org.handle_2fa_required(self.context["request"])
+        if (
+            features.has("organizations:required-email-verification", org)
+            and self.initial_data.get("requireEmailVerification") is True
+        ):
+            org.handle_email_verification_required(self.context["request"])
         return org, changed_data
 
 
@@ -404,6 +435,7 @@ class OwnerOrganizationSerializer(OrganizationSerializer):
 
     def save(self, *args, **kwargs):
         org = self.context["organization"]
+        update_tracked_data(org)
         cancel_deletion = "cancelDeletion" in self.initial_data and org.status in DELETION_STATUSES
         if "defaultRole" in self.initial_data:
             org.default_role = self.initial_data["defaultRole"]
@@ -451,6 +483,8 @@ class OrganizationDetailsEndpoint(OrganizationEndpoint):
                             to be available and unique.
         :auth: required
         """
+        from sentry import features
+
         if request.access.has_scope("org:admin"):
             serializer_cls = OwnerOrganizationSerializer
         else:
@@ -487,6 +521,35 @@ class OrganizationDetailsEndpoint(OrganizationEndpoint):
                     data=changed_data,
                 )
 
+                # Temporarily writing org-level apdex changes to ProjectTransactionThreshold
+                # for orgs who don't have the feature enabled so that when this
+                # feature is GA'ed it captures the orgs current apdex threshold.
+                if serializer.validated_data.get("apdexThreshold") is not None and not features.has(
+                    "organizations:project-transaction-threshold", organization
+                ):
+                    apdex_threshold = serializer.validated_data.get("apdexThreshold")
+
+                    with transaction.atomic():
+                        ProjectTransactionThreshold.objects.filter(
+                            organization_id=organization.id
+                        ).delete()
+
+                        project_ids = Project.objects.filter(
+                            organization_id=organization.id
+                        ).values_list("id", flat=True)
+
+                        ProjectTransactionThreshold.objects.bulk_create(
+                            [
+                                ProjectTransactionThreshold(
+                                    project_id=project_id,
+                                    organization_id=organization.id,
+                                    threshold=int(apdex_threshold),
+                                    metric=TransactionMetric.DURATION.value,
+                                )
+                                for project_id in project_ids
+                            ]
+                        )
+
             context = serialize(
                 organization,
                 request.user,
@@ -501,7 +564,7 @@ class OrganizationDetailsEndpoint(OrganizationEndpoint):
         """
         This method exists as a way for getsentry to override this endpoint with less duplication.
         """
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return self.respond({"detail": ERR_NO_USER}, status=401)
         if organization.is_default:
             return self.respond({"detail": ERR_DEFAULT_ORG}, status=400)
@@ -561,3 +624,59 @@ class OrganizationDetailsEndpoint(OrganizationEndpoint):
         :auth: required, user-context-needed
         """
         return self.handle_delete(request, organization)
+
+
+def flag_has_changed(org, flag_name):
+    "Returns ``True`` if ``flag`` has changed since initialization."
+    return getattr(old_value(org, "flags"), flag_name, None) != getattr(org.flags, flag_name)
+
+
+def update_tracked_data(model):
+    "Updates a local copy of attributes values"
+    if model.id:
+        data = {}
+        for f in model._meta.fields:
+            # XXX(dcramer): this is how Django determines this (copypasta from Model)
+            if isinstance(type(f).__dict__.get(f.attname), DeferredAttribute) or f.column is None:
+                continue
+            try:
+                v = get_field_value(model, f)
+            except AttributeError as e:
+                # this case can come up from pickling
+                logging.exception(str(e))
+            else:
+                if isinstance(v, BitHandler):
+                    v = copy(v)
+                data[f.column] = v
+        model.__data = data
+    else:
+        model.__data = UNSAVED
+
+
+def get_field_value(model, field):
+    if isinstance(type(field).__dict__.get(field.attname), DeferredAttribute):
+        return DEFERRED
+    if isinstance(field, models.ForeignKey):
+        return getattr(model, field.column, None)
+    return getattr(model, field.attname, None)
+
+
+def has_changed(model, field_name):
+    "Returns ``True`` if ``field`` has changed since initialization."
+    if model.__data is UNSAVED:
+        return False
+    field = model._meta.get_field(field_name)
+    value = get_field_value(model, field)
+    if value is DEFERRED:
+        return False
+    return model.__data.get(field_name) != value
+
+
+def old_value(model, field_name):
+    "Returns the previous value of ``field``"
+    if model.__data is UNSAVED:
+        return None
+    value = model.__data.get(field_name)
+    if value is DEFERRED:
+        return None
+    return model.__data.get(field_name)

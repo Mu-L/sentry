@@ -3,9 +3,8 @@ import logging
 from django.db import DataError, IntegrityError, router, transaction
 from django.db.models import F
 
-from sentry import eventstream
+from sentry import eventstream, similarity
 from sentry.app import tsdb
-from sentry import similarity
 from sentry.tasks.base import instrumented_task, track_group_async_operation
 
 logger = logging.getLogger("sentry.merge")
@@ -33,17 +32,17 @@ def merge_groups(
     # TODO(mattrobenolt): Write tests for all of this
     from sentry.models import (
         Activity,
+        Environment,
+        EventAttachment,
         Group,
         GroupAssignee,
         GroupEnvironment,
         GroupHash,
+        GroupMeta,
+        GroupRedirect,
         GroupRuleStatus,
         GroupSubscription,
-        Environment,
-        EventAttachment,
         UserReport,
-        GroupRedirect,
-        GroupMeta,
         get_group_with_redirect,
     )
 
@@ -58,7 +57,7 @@ def merge_groups(
     try:
         new_group, _ = get_group_with_redirect(to_object_id)
     except Group.DoesNotExist:
-        logger.warn(
+        logger.warning(
             "group.malformed.invalid_id",
             extra={"transaction_id": transaction_id, "old_object_ids": from_object_ids},
         )
@@ -84,7 +83,7 @@ def merge_groups(
     except Group.DoesNotExist:
         from_object_ids.remove(from_object_id)
 
-        logger.warn(
+        logger.warning(
             "group.malformed.invalid_id",
             extra={"transaction_id": transaction_id, "old_object_id": from_object_id},
         )
@@ -205,7 +204,7 @@ def _get_event_environment(event, project, cache):
                 project.organization_id, environment_name
             )
         except Environment.DoesNotExist:
-            logger.warn(
+            logger.warning(
                 "event.environment.does_not_exist",
                 extra={"project_id": project.id, "environment_name": environment_name},
             )

@@ -1,8 +1,9 @@
 from datetime import timedelta
+from uuid import uuid4
+
 from django.apps import apps
 from django.db import models
 from django.utils import timezone
-from uuid import uuid4
 
 from sentry.db.models import BoundedBigIntegerField, JSONField, Model
 
@@ -16,7 +17,7 @@ def default_date_schedule():
 
 
 class ScheduledDeletion(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     guid = models.CharField(max_length=32, unique=True, default=default_guid)
     app_label = models.CharField(max_length=64)

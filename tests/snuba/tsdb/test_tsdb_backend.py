@@ -1,13 +1,13 @@
 from datetime import datetime, timedelta
+
 import pytz
 
-from sentry.utils.compat.mock import patch
-
 from sentry.models import Environment, Group, GroupRelease, Release
+from sentry.testutils import SnubaTestCase, TestCase
+from sentry.testutils.helpers.datetime import iso_format
 from sentry.tsdb.base import TSDBModel
 from sentry.tsdb.snuba import SnubaTSDB
-from sentry.testutils import TestCase, SnubaTestCase
-from sentry.testutils.helpers.datetime import iso_format
+from sentry.utils.compat.mock import patch
 from sentry.utils.dates import to_timestamp
 
 
@@ -88,11 +88,11 @@ class SnubaTSDBTest(TestCase, SnubaTestCase):
                         "baz": "quux",
                         # Switch every 2 hours
                         "environment": [env1, None][(r // 7200) % 3],
-                        "sentry:user": "id:user{}".format(r // 3300),
+                        "sentry:user": f"id:user{r // 3300}",
                     },
                     "user": {
                         # change every 55 min so some hours have 1 user, some have 2
-                        "id": "user{}".format(r // 3300),
+                        "id": f"user{r // 3300}",
                         "email": f"user{r}@sentry.io",
                     },
                     "release": str(r // 3600) * 10,  # 1 per hour,

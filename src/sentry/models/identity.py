@@ -13,7 +13,6 @@ from sentry.db.models import (
     Model,
 )
 
-
 logger = logging.getLogger(__name__)
 
 # TODO(dcramer): pull in enum library
@@ -36,7 +35,7 @@ class IdentityProvider(Model):
     acme-org.onelogin.com.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     type = models.CharField(max_length=64)
     config = EncryptedJsonField()
@@ -59,7 +58,7 @@ class Identity(Model):
     A verified link between a user and a third party identity.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     idp = FlexibleForeignKey("sentry.IdentityProvider")
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL)

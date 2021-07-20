@@ -1,14 +1,15 @@
 from datetime import timedelta
+
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
+from sentry.db.models import BoundedBigIntegerField, BoundedPositiveIntegerField, Model, sane_repr
 from sentry.utils.cache import cache
 from sentry.utils.hashlib import md5_text
-from sentry.db.models import BoundedPositiveIntegerField, BoundedBigIntegerField, Model, sane_repr
 
 
 class GroupRelease(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     # TODO: Should be BoundedBigIntegerField
     project_id = BoundedPositiveIntegerField(db_index=True)
@@ -23,6 +24,10 @@ class GroupRelease(Model):
         app_label = "sentry"
         db_table = "sentry_grouprelease"
         unique_together = (("group_id", "release_id", "environment"),)
+        index_together = (
+            ("group_id", "first_seen"),
+            ("group_id", "last_seen"),
+        )
 
     __repr__ = sane_repr("group_id", "release_id")
 

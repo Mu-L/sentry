@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import StacktraceLinkModal from 'app/components/events/interfaces/stacktraceLinkModal';
@@ -36,7 +34,7 @@ describe('StacktraceLinkModal', function () {
     });
 
     MockApiClient.addMockResponse({
-      url: `/organizations/${org.slug}/integrations/${integration.id}/repo-project-path-configs/`,
+      url: `/organizations/${org.slug}/code-mappings/`,
       method: 'POST',
       statusCode,
     });

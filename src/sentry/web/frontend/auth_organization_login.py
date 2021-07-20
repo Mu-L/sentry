@@ -1,7 +1,7 @@
-from django.core.urlresolvers import reverse
-from django.db import transaction
-from django.views.decorators.cache import never_cache
 from django.contrib import messages
+from django.db import transaction
+from django.urls import reverse
+from django.views.decorators.cache import never_cache
 
 from sentry.auth.helper import AuthHelper
 from sentry.constants import WARN_SESSION_EXPIRED
@@ -23,9 +23,9 @@ class AuthOrganizationLoginView(AuthLoginView):
             )
 
             if request.POST.get("init"):
-                helper.init_pipeline()
+                helper.initialize()
 
-            if not helper.pipeline_is_valid():
+            if not helper.is_valid():
                 return helper.error("Something unexpected happened during authentication.")
 
             return helper.current_step()
@@ -37,7 +37,7 @@ class AuthOrganizationLoginView(AuthLoginView):
             "organization": organization,
             "provider_key": provider.key,
             "provider_name": provider.name,
-            "authenticated": request.user.is_authenticated(),
+            "authenticated": request.user.is_authenticated,
         }
 
         return self.respond("sentry/organization-login.html", context)

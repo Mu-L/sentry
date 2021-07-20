@@ -1,15 +1,15 @@
 import platform
-import responses
-import sentry
-
-from sentry.utils.compat.mock import patch
 from uuid import uuid4
 
+import responses
+
+import sentry
 from sentry import options
 from sentry.models import Broadcast
+from sentry.tasks.beacon import BEACON_URL, send_beacon, send_beacon_metric
 from sentry.testutils import TestCase
-from sentry.tasks.beacon import BEACON_URL, send_beacon
 from sentry.utils import json
+from sentry.utils.compat.mock import patch
 
 
 class SendBeaconTest(TestCase):
@@ -169,3 +169,34 @@ class SendBeaconTest(TestCase):
             send_beacon()
 
         assert not safe_urlopen.mock_calls
+
+    @patch("sentry.tasks.beacon.safe_urlopen")
+    @responses.activate
+    def test_metrics(self, safe_urlopen):
+        metrics = [
+            {
+                "description": "SentryApp",
+                "component": "Foo",
+            },
+            {
+                "description": "SentryApp",
+                "component": "Bar",
+            },
+        ]
+
+        send_beacon_metric(metrics=metrics)
+
+        install_id = options.get("sentry:install-id")
+        assert install_id and len(install_id) == 40
+
+        assert safe_urlopen.call_count == 1
+        safe_urlopen.assert_called_once_with(
+            BEACON_URL,
+            json={
+                "type": "metric",
+                "install_id": install_id,
+                "version": sentry.get_version(),
+                "data": {"metrics": metrics},
+            },
+            timeout=5,
+        )

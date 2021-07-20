@@ -1,4 +1,3 @@
-import React from 'react';
 import {browserHistory} from 'react-router';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
@@ -141,6 +140,26 @@ describe('EventsV2 > QueryList', function () {
 
     expect(deleteMock).toHaveBeenCalled();
     expect(queryChangeMock).toHaveBeenCalled();
+  });
+
+  it('returns short url location for saved query', async function () {
+    const wrapper = mountWithTheme(
+      <QueryList
+        organization={organization}
+        savedQueries={savedQueries}
+        pageLinks=""
+        onQueryChange={queryChangeMock}
+        location={location}
+      />,
+      TestStubs.routerContext()
+    );
+    const card = wrapper.find('QueryCard').last();
+    const link = card.find('Link').last().prop('to');
+    expect(link.pathname).toEqual('/organizations/org-slug/discover/results/');
+    expect(link.query).toEqual({
+      id: '2',
+      statsPeriod: '14d',
+    });
   });
 
   it('can redirect on last query deletion', async function () {

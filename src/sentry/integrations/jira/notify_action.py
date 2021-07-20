@@ -8,14 +8,13 @@ from sentry.rules.actions.base import TicketEventAction
 from sentry.utils.http import absolute_uri
 from sentry.web.decorators import transaction_start
 
-
 logger = logging.getLogger("sentry.rules")
 
 
 class JiraCreateTicketAction(TicketEventAction):
     label = "Create a Jira issue in {integration} with these "
     ticket_type = "a Jira issue"
-    link = "https://docs.sentry.io/product/integrations/jira/#issue-sync"
+    link = "https://docs.sentry.io/product/integrations/project-mgmt/jira/#issue-sync"
     provider = "jira"
     integration_key = "integration"
 

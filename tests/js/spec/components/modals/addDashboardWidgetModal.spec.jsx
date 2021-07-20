@@ -1,8 +1,6 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
-import {selectByLabel} from 'sentry-test/select-new';
+import {getOptionByLabel, selectByLabel} from 'sentry-test/select-new';
 
 import AddDashboardWidgetModal from 'app/components/modals/addDashboardWidgetModal';
 import TagStore from 'app/stores/tagStore';
@@ -38,6 +36,18 @@ function getDisplayType(wrapper) {
   return wrapper.find('input[name="displayType"]');
 }
 
+async function setSearchConditions(el, query) {
+  el.find('textarea')
+    .simulate('change', {target: {value: query}})
+    .getDOMNode()
+    .setSelectionRange(query.length, query.length);
+
+  await tick();
+  await el.update();
+
+  el.find('textarea').simulate('keydown', {key: 'Enter'});
+}
+
 describe('Modals -> AddDashboardWidgetModal', function () {
   const initialData = initializeOrg({
     organization: {
@@ -50,6 +60,8 @@ describe('Modals -> AddDashboardWidgetModal', function () {
     {name: 'custom-field', key: 'custom-field'},
   ];
 
+  let eventsStatsMock;
+
   beforeEach(function () {
     TagStore.onLoadTagsSuccess(tags);
     MockApiClient.addMockResponse({
@@ -58,13 +70,21 @@ describe('Modals -> AddDashboardWidgetModal', function () {
       statusCode: 200,
       body: [],
     });
-    MockApiClient.addMockResponse({
+    eventsStatsMock = MockApiClient.addMockResponse({
       url: '/organizations/org-slug/events-stats/',
       body: [],
     });
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/eventsv2/',
       body: {data: [{'event.type': 'error'}], meta: {'event.type': 'string'}},
+    });
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/events-geo/',
+      body: {data: [], meta: {}},
+    });
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/recent-searches/',
+      body: [],
     });
   });
 
@@ -84,6 +104,7 @@ describe('Modals -> AddDashboardWidgetModal', function () {
     await clickSubmit(wrapper);
 
     expect(widget.title).toEqual('Unique Users');
+    wrapper.unmount();
   });
 
   it('can add conditions', async function () {
@@ -104,6 +125,7 @@ describe('Modals -> AddDashboardWidgetModal', function () {
 
     expect(widget.queries).toHaveLength(1);
     expect(widget.queries[0].conditions).toEqual('color:blue');
+    wrapper.unmount();
   });
 
   it('can choose a field', async function () {
@@ -121,6 +143,7 @@ describe('Modals -> AddDashboardWidgetModal', function () {
 
     expect(widget.queries).toHaveLength(1);
     expect(widget.queries[0].fields).toEqual(['p95(transaction.duration)']);
+    wrapper.unmount();
   });
 
   it('can add additional fields', async function () {
@@ -144,6 +167,83 @@ describe('Modals -> AddDashboardWidgetModal', function () {
 
     expect(widget.queries).toHaveLength(1);
     expect(widget.queries[0].fields).toEqual(['count()', 'p95(transaction.duration)']);
+    wrapper.unmount();
+  });
+
+  it('can add and delete additional queries', async function () {
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/tags/event.type/values/',
+      body: [{count: 2, name: 'Nvidia 1080ti'}],
+    });
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/recent-searches/',
+      method: 'POST',
+      body: [],
+    });
+
+    let widget = undefined;
+    const wrapper = mountModal({
+      initialData,
+      onAddWidget: data => (widget = data),
+    });
+
+    // Set first query search conditions
+    await setSearchConditions(
+      wrapper.find('SearchConditionsWrapper StyledSearchBar'),
+      'event.type:transaction'
+    );
+
+    // Set first query legend alias
+    wrapper
+      .find('SearchConditionsWrapper input[placeholder="Legend Alias"]')
+      .simulate('change', {target: {value: 'Transactions'}});
+
+    // Click the "Add Query" button twice
+    const addQuery = wrapper.find('button[aria-label="Add Query"]');
+    addQuery.simulate('click');
+    wrapper.update();
+    addQuery.simulate('click');
+    wrapper.update();
+
+    // Expect three search bars
+    expect(wrapper.find('StyledSearchBar')).toHaveLength(3);
+
+    // Expect "Add Query" button to be hidden since we're limited to at most 3 search conditions
+    expect(wrapper.find('button[aria-label="Add Query"]')).toHaveLength(0);
+
+    // Delete second query
+    expect(wrapper.find('button[aria-label="Remove query"]')).toHaveLength(3);
+    wrapper.find('button[aria-label="Remove query"]').at(1).simulate('click');
+    wrapper.update();
+
+    // Expect "Add Query" button to be shown again
+    expect(wrapper.find('button[aria-label="Add Query"]')).toHaveLength(1);
+
+    // Set second query search conditions
+    const secondSearchBar = wrapper.find('SearchConditionsWrapper StyledSearchBar').at(1);
+    await setSearchConditions(secondSearchBar, 'event.type:error');
+
+    // Set second query legend alias
+    wrapper
+      .find('SearchConditionsWrapper input[placeholder="Legend Alias"]')
+      .at(1)
+      .simulate('change', {target: {value: 'Errors'}});
+
+    // Save widget
+    await clickSubmit(wrapper);
+
+    expect(widget.queries).toHaveLength(2);
+    expect(widget.queries[0]).toMatchObject({
+      name: 'Transactions',
+      conditions: 'event.type:transaction',
+      fields: ['count()'],
+    });
+    expect(widget.queries[1]).toMatchObject({
+      name: 'Errors',
+      conditions: 'event.type:error',
+      fields: ['count()'],
+    });
+    wrapper.unmount();
   });
 
   it('can respond to validation feedback', async function () {
@@ -173,8 +273,9 @@ describe('Modals -> AddDashboardWidgetModal', function () {
     expect(errors).toHaveLength(2);
 
     // Nested object error should display
-    const conditionError = wrapper.find('WidgetQueryForm FieldErrorReason');
+    const conditionError = wrapper.find('WidgetQueriesForm FieldErrorReason');
     expect(conditionError).toHaveLength(1);
+    wrapper.unmount();
   });
 
   it('can edit a widget', async function () {
@@ -184,8 +285,18 @@ describe('Modals -> AddDashboardWidgetModal', function () {
       interval: '5m',
       displayType: 'line',
       queries: [
-        {id: '9', name: 'errors', conditions: 'event.type:error', fields: ['count()']},
-        {id: '9', name: 'csp', conditions: 'event.type:csp', fields: ['count()']},
+        {
+          id: '9',
+          name: 'errors',
+          conditions: 'event.type:error',
+          fields: ['count()', 'count_unique(id)'],
+        },
+        {
+          id: '9',
+          name: 'csp',
+          conditions: 'event.type:csp',
+          fields: ['count()', 'count_unique(id)'],
+        },
       ],
     };
     const onAdd = jest.fn();
@@ -208,13 +319,41 @@ describe('Modals -> AddDashboardWidgetModal', function () {
     expect(wrapper.find('input[name="displayType"]').props().value).toEqual(
       widget.displayType
     );
-    expect(wrapper.find('WidgetQueryForm')).toHaveLength(2);
+    expect(wrapper.find('WidgetQueriesForm')).toHaveLength(1);
+    expect(wrapper.find('StyledSearchBar')).toHaveLength(2);
+    expect(wrapper.find('QueryField')).toHaveLength(2);
+
+    // Expect events-stats endpoint to be called for each search conditions with
+    // the same y-axis parameters
+    expect(eventsStatsMock).toHaveBeenNthCalledWith(
+      1,
+      '/organizations/org-slug/events-stats/',
+      expect.objectContaining({
+        query: expect.objectContaining({
+          query: 'event.type:error',
+          yAxis: ['count()', 'count_unique(id)'],
+        }),
+      })
+    );
+    expect(eventsStatsMock).toHaveBeenNthCalledWith(
+      2,
+      '/organizations/org-slug/events-stats/',
+      expect.objectContaining({
+        query: expect.objectContaining({
+          query: 'event.type:csp',
+          yAxis: ['count()', 'count_unique(id)'],
+        }),
+      })
+    );
 
     title.simulate('change', {target: {value: 'New title'}});
     await clickSubmit(wrapper);
 
     expect(onAdd).not.toHaveBeenCalled();
     expect(widget.title).toEqual('New title');
+
+    expect(eventsStatsMock).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
   });
 
   it('renders column inputs for table widgets', async function () {
@@ -261,9 +400,11 @@ describe('Modals -> AddDashboardWidgetModal', function () {
     expect(wrapper.find('input[name="displayType"]').props().value).toEqual(
       widget.displayType
     );
-    expect(wrapper.find('WidgetQueryForm')).toHaveLength(1);
+    expect(wrapper.find('WidgetQueriesForm')).toHaveLength(1);
     // Should have an orderby select
-    expect(wrapper.find('WidgetQueryForm SelectControl[name="orderby"]')).toHaveLength(1);
+    expect(wrapper.find('WidgetQueriesForm SelectControl[name="orderby"]')).toHaveLength(
+      1
+    );
 
     // Add a column, and choose a value,
     wrapper.find('button[aria-label="Add a Column"]').simulate('click');
@@ -277,6 +418,7 @@ describe('Modals -> AddDashboardWidgetModal', function () {
     // A new field should be added.
     expect(widget.queries[0].fields).toHaveLength(3);
     expect(widget.queries[0].fields[2]).toEqual('trace');
+    wrapper.unmount();
   });
 
   it('uses count() columns if there are no aggregate fields remaining when switching from table to chart', async function () {
@@ -315,6 +457,7 @@ describe('Modals -> AddDashboardWidgetModal', function () {
 
     expect(widget.queries).toHaveLength(1);
     expect(widget.queries[0].fields).toEqual(['count()']);
+    wrapper.unmount();
   });
 
   it('should filter out non-aggregate fields when switching from table to chart', async function () {
@@ -372,5 +515,191 @@ describe('Modals -> AddDashboardWidgetModal', function () {
 
     expect(widget.queries).toHaveLength(1);
     expect(widget.queries[0].fields).toEqual(['p95(transaction.duration)']);
+    wrapper.unmount();
+  });
+
+  it('should filter non-legal y-axis choices for timeseries widget charts', async function () {
+    let widget = undefined;
+    const wrapper = mountModal({
+      initialData,
+      onAddWidget: data => (widget = data),
+    });
+    // No delete button as there is only one field.
+    expect(wrapper.find('IconDelete')).toHaveLength(0);
+
+    selectByLabel(wrapper, 'any(\u2026)', {
+      name: 'field',
+      at: 0,
+      control: true,
+    });
+
+    // Expect user.display to not be an available parameter option for any()
+    // for line (timeseries) widget charts
+    const option = getOptionByLabel(wrapper, 'user.display', {
+      name: 'parameter',
+      at: 0,
+      control: true,
+    });
+    expect(option.exists()).toEqual(false);
+
+    // Be able to choose a numeric-like option for any()
+    selectByLabel(wrapper, 'measurements.lcp', {
+      name: 'parameter',
+      at: 0,
+      control: true,
+    });
+
+    await clickSubmit(wrapper);
+
+    expect(widget.displayType).toEqual('line');
+    expect(widget.queries).toHaveLength(1);
+    expect(widget.queries[0].fields).toEqual(['any(measurements.lcp)']);
+    wrapper.unmount();
+  });
+
+  it('should not filter y-axis choices for big number widget charts', async function () {
+    let widget = undefined;
+    const wrapper = mountModal({
+      initialData,
+      onAddWidget: data => (widget = data),
+    });
+    // No delete button as there is only one field.
+    expect(wrapper.find('IconDelete')).toHaveLength(0);
+
+    // Select Big number display
+    selectByLabel(wrapper, 'Big Number', {name: 'displayType', at: 0, control: true});
+    expect(getDisplayType(wrapper).props().value).toEqual('big_number');
+
+    selectByLabel(wrapper, 'count_unique(\u2026)', {
+      name: 'field',
+      at: 0,
+      control: true,
+    });
+
+    // Be able to choose a non numeric-like option for count_unique()
+    selectByLabel(wrapper, 'user.display', {
+      name: 'parameter',
+      at: 0,
+      control: true,
+    });
+
+    await clickSubmit(wrapper);
+
+    expect(widget.displayType).toEqual('big_number');
+    expect(widget.queries).toHaveLength(1);
+    expect(widget.queries[0].fields).toEqual(['count_unique(user.display)']);
+    wrapper.unmount();
+  });
+
+  it('should filter y-axis choices for world map widget charts', async function () {
+    let widget = undefined;
+    const wrapper = mountModal({
+      initialData,
+      onAddWidget: data => (widget = data),
+    });
+    // No delete button as there is only one field.
+    expect(wrapper.find('IconDelete')).toHaveLength(0);
+
+    // Select World Map display
+    selectByLabel(wrapper, 'World Map', {name: 'displayType', at: 0, control: true});
+    expect(getDisplayType(wrapper).props().value).toEqual('world_map');
+
+    // Choose any()
+    selectByLabel(wrapper, 'any(\u2026)', {
+      name: 'field',
+      at: 0,
+      control: true,
+    });
+
+    // user.display should be filtered out for any()
+    const option = getOptionByLabel(wrapper, 'user.display', {
+      name: 'parameter',
+      at: 0,
+      control: true,
+    });
+    expect(option.exists()).toEqual(false);
+
+    selectByLabel(wrapper, 'measurements.lcp', {
+      name: 'parameter',
+      at: 0,
+      control: true,
+    });
+
+    // Choose count_unique()
+    selectByLabel(wrapper, 'count_unique(\u2026)', {
+      name: 'field',
+      at: 0,
+      control: true,
+    });
+
+    // user.display not should be filtered out for count_unique()
+    selectByLabel(wrapper, 'user.display', {
+      name: 'parameter',
+      at: 0,
+      control: true,
+    });
+
+    // Be able to choose a numeric-like option
+    selectByLabel(wrapper, 'measurements.lcp', {
+      name: 'parameter',
+      at: 0,
+      control: true,
+    });
+
+    await clickSubmit(wrapper);
+
+    expect(widget.displayType).toEqual('world_map');
+    expect(widget.queries).toHaveLength(1);
+    expect(widget.queries[0].fields).toEqual(['count_unique(measurements.lcp)']);
+    wrapper.unmount();
+  });
+
+  it('should filter y-axis choices by output type when switching from big number to line chart', async function () {
+    let widget = undefined;
+    const wrapper = mountModal({
+      initialData,
+      onAddWidget: data => (widget = data),
+    });
+    // No delete button as there is only one field.
+    expect(wrapper.find('IconDelete')).toHaveLength(0);
+
+    // Select Big Number display
+    selectByLabel(wrapper, 'Big Number', {name: 'displayType', at: 0, control: true});
+    expect(getDisplayType(wrapper).props().value).toEqual('big_number');
+
+    // Choose any()
+    selectByLabel(wrapper, 'any(\u2026)', {
+      name: 'field',
+      at: 0,
+      control: true,
+    });
+
+    selectByLabel(wrapper, 'id', {
+      name: 'parameter',
+      at: 0,
+      control: true,
+    });
+
+    // Select Line chart display
+    selectByLabel(wrapper, 'Line Chart', {name: 'displayType', at: 0, control: true});
+    expect(getDisplayType(wrapper).props().value).toEqual('line');
+
+    // Expect event.type field to be converted to count()
+    const fieldColumn = wrapper.find('input[name="field"]');
+    expect(fieldColumn.length).toEqual(1);
+    expect(fieldColumn.props().value).toMatchObject({
+      kind: 'function',
+      meta: {
+        name: 'count',
+        parameters: [],
+      },
+    });
+
+    await clickSubmit(wrapper);
+
+    expect(widget.displayType).toEqual('line');
+    expect(widget.queries).toHaveLength(1);
+    expect(widget.queries[0].fields).toEqual(['count()']);
+    wrapper.unmount();
   });
 });

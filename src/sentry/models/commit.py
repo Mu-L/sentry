@@ -1,18 +1,13 @@
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import (
-    BoundedPositiveIntegerField,
-    FlexibleForeignKey,
-    Model,
-    sane_repr,
-)
+from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, Model, sane_repr
 from sentry.utils.cache import memoize
 from sentry.utils.groupreference import find_referenced_groups
 
 
 class Commit(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     organization_id = BoundedPositiveIntegerField(db_index=True)
     repository_id = BoundedPositiveIntegerField()

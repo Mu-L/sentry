@@ -1,15 +1,18 @@
 __all__ = ["IntegrationPipeline"]
 
+from typing import Optional
+
 from django.db import IntegrityError
 from django.utils import timezone
 from django.utils.translation import ugettext as _
 
 from sentry.api.serializers import serialize
 from sentry.constants import ObjectStatus
-from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.models import Identity, IdentityProvider, IdentityStatus, Integration
-from sentry.pipeline import Pipeline
+from sentry.pipeline import Pipeline, PipelineAnalyticsEntry
+from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.web.helpers import render_to_response
+
 from . import default_manager
 
 
@@ -31,6 +34,10 @@ def ensure_integration(key, data):
 class IntegrationPipeline(Pipeline):
     pipeline_name = "integration_pipeline"
     provider_manager = default_manager
+
+    def get_analytics_entry(self) -> Optional[PipelineAnalyticsEntry]:
+        pipeline_type = "reauth" if self.fetch_state("integration_id") else "install"
+        return PipelineAnalyticsEntry("integrations.pipeline_step", pipeline_type)
 
     def finish_pipeline(self):
         try:
@@ -122,7 +129,7 @@ class IntegrationPipeline(Pipeline):
                 else:
                     self.get_logger().info(
                         "finish_pipeline.identity_linked_different_user",
-                        {
+                        extra={
                             "idp_id": idp.id,
                             "external_id": identity["external_id"],
                             "object_id": matched_identity.id,

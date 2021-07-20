@@ -5,20 +5,21 @@ import pytest
 import responses
 from django.utils import timezone
 from exam import patcher
-from sentry.utils.compat.mock import Mock, patch
 
 from sentry.snuba.models import QueryDatasets, QuerySubscription, SnubaQuery, SnubaQueryEventType
 from sentry.snuba.tasks import (
+    SUBSCRIPTION_STATUS_MAX_AGE,
     apply_dataset_query_conditions,
     build_snuba_filter,
     create_subscription_in_snuba,
     delete_subscription_from_snuba,
-    update_subscription_in_snuba,
     subscription_checker,
-    SUBSCRIPTION_STATUS_MAX_AGE,
+    update_subscription_in_snuba,
 )
-from sentry.utils import json
 from sentry.testutils import TestCase
+from sentry.utils import json
+from sentry.utils.compat.mock import Mock, patch
+from sentry.utils.snuba import _snuba_pool
 
 
 class BaseSnubaTaskTest(metaclass=abc.ABCMeta):
@@ -38,14 +39,15 @@ class BaseSnubaTaskTest(metaclass=abc.ABCMeta):
     def task(self):
         pass
 
-    def create_subscription(self, status=None, subscription_id=None, dataset=None):
+    def create_subscription(self, status=None, subscription_id=None, dataset=None, query=None):
         if status is None:
             status = self.expected_status
         if dataset is None:
             dataset = QueryDatasets.EVENTS
         dataset = dataset.value
         aggregate = "count_unique(tags[sentry:user])"
-        query = "hello"
+        if query is None:
+            query = "hello"
         time_window = 60
         resolution = 60
 
@@ -91,13 +93,25 @@ class CreateSubscriptionInSnubaTest(BaseSnubaTaskTest, TestCase):
             QuerySubscription.Status.CREATING, subscription_id=uuid4().hex
         )
         create_subscription_in_snuba(sub.id)
-        self.metrics.incr.assert_called_once_with(
-            "snuba.subscriptions.create.already_created_in_snuba"
-        )
+        self.metrics.incr.assert_any_call("snuba.subscriptions.create.already_created_in_snuba")
 
     def test(self):
         sub = self.create_subscription(QuerySubscription.Status.CREATING)
         create_subscription_in_snuba(sub.id)
+        sub = QuerySubscription.objects.get(id=sub.id)
+        assert sub.status == QuerySubscription.Status.ACTIVE.value
+        assert sub.subscription_id is not None
+
+    def test_group_id(self):
+        group_id = 1234
+        sub = self.create_subscription(
+            QuerySubscription.Status.CREATING, query=f"issue.id:{group_id}"
+        )
+        with patch.object(_snuba_pool, "urlopen", side_effect=_snuba_pool.urlopen) as urlopen:
+            create_subscription_in_snuba(sub.id)
+            assert ["group_id", "IN", [group_id]] in json.loads(urlopen.call_args[1]["body"])[
+                "conditions"
+            ]
         sub = QuerySubscription.objects.get(id=sub.id)
         assert sub.status == QuerySubscription.Status.ACTIVE.value
         assert sub.subscription_id is not None
@@ -410,10 +424,7 @@ class SubscriptionCheckerTest(TestCase):
                 status,
                 date_updated=timezone.now() - SUBSCRIPTION_STATUS_MAX_AGE * 2,
             )
-            sub_new = self.create_subscription(
-                status,
-                date_updated=timezone.now(),
-            )
+            sub_new = self.create_subscription(status, date_updated=timezone.now())
             with self.tasks():
                 subscription_checker()
             if status == QuerySubscription.Status.DELETING:

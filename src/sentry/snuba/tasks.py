@@ -3,17 +3,19 @@ from datetime import timedelta
 
 import sentry_sdk
 from django.utils import timezone
+from snuba_sdk.legacy import json_to_snql
 
-from sentry.api.event_search import get_filter, resolve_field_list
+from sentry.search.events.fields import resolve_field_list
+from sentry.search.events.filter import get_filter
 from sentry.snuba.models import QueryDatasets, QuerySubscription
 from sentry.tasks.base import instrumented_task
-from sentry.utils import metrics, json
+from sentry.utils import json, metrics
 from sentry.utils.snuba import (
-    _snuba_pool,
     Dataset,
     SnubaError,
-    resolve_snuba_aliases,
+    _snuba_pool,
     resolve_column,
+    resolve_snuba_aliases,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,16 +46,20 @@ def apply_dataset_query_conditions(dataset, query, event_types, discover=False):
     """
     if not discover and dataset == QueryDatasets.TRANSACTIONS:
         return query
+
     if event_types:
         event_type_conditions = " OR ".join(
-            [f"event.type:{event_type.name.lower()}" for event_type in event_types]
+            f"event.type:{event_type.name.lower()}" for event_type in event_types
         )
     elif dataset in DATASET_CONDITIONS:
         event_type_conditions = DATASET_CONDITIONS[dataset]
     else:
         return query
 
-    return f"({event_type_conditions}) AND ({query})"
+    if query:
+        return f"({event_type_conditions}) AND ({query})"
+
+    return event_type_conditions
 
 
 @instrumented_task(
@@ -172,6 +178,8 @@ def build_snuba_filter(dataset, query, aggregate, environment, event_types, para
     snuba_filter = get_filter(query, params=params)
     snuba_filter.update_with(resolve_field_list([aggregate], snuba_filter, auto_fields=False))
     snuba_filter = resolve_snuba_aliases(snuba_filter, resolve_func)[0]
+    if snuba_filter.group_ids:
+        snuba_filter.conditions.append(["group_id", "IN", list(map(int, snuba_filter.group_ids))])
     if environment:
         snuba_filter.conditions.append(["environment", "=", environment.name])
     return snuba_filter
@@ -186,21 +194,36 @@ def _create_in_snuba(subscription):
         snuba_query.environment,
         snuba_query.event_types,
     )
+
+    body = {
+        "project_id": subscription.project_id,
+        "project": subscription.project_id,  # for SnQL SDK
+        "dataset": snuba_query.dataset,
+        "conditions": snuba_filter.conditions,
+        "aggregations": snuba_filter.aggregations,
+        "time_window": snuba_query.time_window,
+        "resolution": snuba_query.resolution,
+    }
+    try:
+        metrics.incr("snuba.snql.subscription.create", tags={"dataset": snuba_query.dataset})
+        snql_query = json_to_snql(body, snuba_query.dataset)
+        snql_query.validate()
+        body["query"] = str(snql_query)
+        body["type"] = "delegate"  # mark this as a combined subscription
+    except Exception as e:
+        logger.warning(
+            "snuba.snql.subscription.parsing.error",
+            extra={"error": str(e), "params": json.dumps(body), "dataset": snuba_query.dataset},
+        )
+        metrics.incr("snuba.snql.subscription.parsing.error", tags={"dataset": snuba_query.dataset})
+
     response = _snuba_pool.urlopen(
         "POST",
         f"/{snuba_query.dataset}/subscriptions",
-        body=json.dumps(
-            {
-                "project_id": subscription.project_id,
-                "dataset": snuba_query.dataset,
-                "conditions": snuba_filter.conditions,
-                "aggregations": snuba_filter.aggregations,
-                "time_window": snuba_query.time_window,
-                "resolution": snuba_query.resolution,
-            }
-        ),
+        body=json.dumps(body),
     )
     if response.status != 202:
+        metrics.incr("snuba.snql.subscription.http.error", tags={"dataset": snuba_query.dataset})
         raise SnubaError("HTTP %s response from Snuba!" % response.status)
     return json.loads(response.data)["subscription_id"]
 

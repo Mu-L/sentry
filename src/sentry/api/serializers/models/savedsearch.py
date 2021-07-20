@@ -5,7 +5,7 @@ from sentry.models import SavedSearch, SavedSearchUserDefault
 @register(SavedSearch)
 class SavedSearchSerializer(Serializer):
     def get_attrs(self, item_list, user):
-        if user.is_authenticated():
+        if user.is_authenticated:
             user_defaults = tuple(
                 SavedSearchUserDefault.objects.filter(
                     savedsearch__in=item_list, user=user
@@ -27,6 +27,7 @@ class SavedSearchSerializer(Serializer):
             "type": obj.type,
             "name": obj.name,
             "query": obj.query,
+            "sort": obj.sort,
             # TODO: Remove once we've completely deprecated Sentry 9
             "isDefault": obj.is_default,
             # TODO: Remove once we've completely deprecated Sentry 9

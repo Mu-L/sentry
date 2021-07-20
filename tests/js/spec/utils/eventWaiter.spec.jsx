@@ -1,6 +1,4 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import EventWaiter from 'app/utils/eventWaiter';
 
@@ -22,7 +20,7 @@ describe('EventWaiter', function () {
 
     const child = jest.fn().mockReturnValue(null);
 
-    mount(
+    mountWithTheme(
       <EventWaiter
         api={new MockApiClient()}
         organization={org}
@@ -97,7 +95,7 @@ describe('EventWaiter', function () {
 
     const child = jest.fn().mockReturnValue(null);
 
-    mount(
+    mountWithTheme(
       <EventWaiter
         api={new MockApiClient()}
         organization={org}
@@ -137,7 +135,7 @@ describe('EventWaiter', function () {
 
     const child = jest.fn().mockReturnValue(null);
 
-    mount(
+    mountWithTheme(
       <EventWaiter
         api={new MockApiClient()}
         organization={org}

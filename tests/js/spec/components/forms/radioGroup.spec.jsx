@@ -1,6 +1,4 @@
-import React from 'react';
-
-import {mount, mountWithTheme} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import RadioGroup from 'app/views/settings/components/forms/controls/radioGroup';
 
@@ -25,7 +23,7 @@ describe('RadioGroup', function () {
 
   it('renders disabled', function () {
     const mock = jest.fn();
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <RadioGroup
         name="radio"
         label="test"
@@ -62,7 +60,7 @@ describe('RadioGroup', function () {
   it('calls onChange when clicked', function () {
     const mock = jest.fn();
 
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <RadioGroup
         name="radio"
         label="test"

@@ -1,14 +1,15 @@
 from datetime import timedelta
+
 from django.db import models
 from django.utils import timezone
 
-from sentry.utils.cache import cache
-from sentry.utils import metrics
 from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, Model, sane_repr
+from sentry.utils import metrics
+from sentry.utils.cache import cache
 
 
 class ReleaseEnvironment(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     organization = FlexibleForeignKey("sentry.Organization", db_index=True, db_constraint=False)
     # DEPRECATED

@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {selectByValue} from 'sentry-test/select-new';
 
@@ -21,8 +19,8 @@ describe('CustomResolutionModal', function () {
         Header={p => p.children}
         Body={p => p.children}
         Footer={p => p.children}
-        orgId="org-slug"
-        projectId="project-slug"
+        orgSlug="org-slug"
+        projectSlug="project-slug"
         onSelected={onSelected}
         closeModal={jest.fn()}
       />,

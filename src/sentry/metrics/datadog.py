@@ -1,6 +1,6 @@
 __all__ = ["DatadogMetricsBackend"]
 
-from datadog import initialize, ThreadStats
+from datadog import ThreadStats, initialize
 from datadog.util.hostname import get_hostname
 
 from sentry.utils.cache import memoize
@@ -40,7 +40,7 @@ class DatadogMetricsBackend(MetricsBackend):
         if instance:
             tags["instance"] = instance
         if tags:
-            tags = ["{}:{}".format(*i) for i in tags.items()]
+            tags = [f"{k}:{v}" for k, v in tags.items()]
         self.stats.increment(
             self._get_key(key), amount, sample_rate=sample_rate, tags=tags, host=self.host
         )
@@ -53,7 +53,7 @@ class DatadogMetricsBackend(MetricsBackend):
         if instance:
             tags["instance"] = instance
         if tags:
-            tags = ["{}:{}".format(*i) for i in tags.items()]
+            tags = [f"{k}:{v}" for k, v in tags.items()]
         self.stats.timing(
             self._get_key(key), value, sample_rate=sample_rate, tags=tags, host=self.host
         )

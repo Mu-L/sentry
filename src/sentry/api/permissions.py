@@ -1,7 +1,11 @@
 from rest_framework import permissions
 
-from sentry.api.exceptions import SuperuserRequired
-from sentry.api.exceptions import SsoRequired, TwoFactorRequired
+from sentry.api.exceptions import (
+    MemberDisabledOverLimit,
+    SsoRequired,
+    SuperuserRequired,
+    TwoFactorRequired,
+)
 from sentry.auth import access
 from sentry.auth.superuser import is_active_superuser
 from sentry.auth.system import is_system_auth
@@ -39,7 +43,7 @@ class ScopedPermission(permissions.BasePermission):
     def has_permission(self, request, view):
         # session-based auth has all scopes for a logged in user
         if not getattr(request, "auth", None):
-            return request.user.is_authenticated()
+            return request.user.is_authenticated
 
         allowed_scopes = set(self.scope_map.get(request.method, []))
         current_scopes = request.auth.get_scopes()
@@ -53,7 +57,7 @@ class SuperuserPermission(permissions.BasePermission):
     def has_permission(self, request, view):
         if is_active_superuser(request):
             return True
-        if request.user.is_authenticated() and request.user.is_superuser:
+        if request.user.is_authenticated and request.user.is_superuser:
             raise SuperuserRequired
         return False
 
@@ -65,10 +69,13 @@ class SentryPermission(ScopedPermission):
     def needs_sso(self, request, organization):
         return False
 
+    def is_member_disabled_from_limit(self, request, organization):
+        return False
+
     def determine_access(self, request, organization):
         from sentry.api.base import logger
 
-        if request.user and request.user.is_authenticated() and request.auth:
+        if request.user and request.user.is_authenticated and request.auth:
             request.access = access.from_request(
                 request, organization, scopes=request.auth.get_scopes()
             )
@@ -79,20 +86,22 @@ class SentryPermission(ScopedPermission):
         else:
             request.access = access.from_request(request, organization)
 
+            extra = {"organization_id": organization.id, "user_id": request.user.id}
+
             if auth.is_user_signed_request(request):
                 # if the user comes from a signed request
                 # we let them pass if sso is enabled
                 logger.info(
                     "access.signed-sso-passthrough",
-                    extra={"organization_id": organization.id, "user_id": request.user.id},
+                    extra=extra,
                 )
-            elif request.user.is_authenticated():
+            elif request.user.is_authenticated:
                 # session auth needs to confirm various permissions
                 if self.needs_sso(request, organization):
 
                     logger.info(
                         "access.must-sso",
-                        extra={"organization_id": organization.id, "user_id": request.user.id},
+                        extra=extra,
                     )
 
                     raise SsoRequired(organization)
@@ -100,6 +109,13 @@ class SentryPermission(ScopedPermission):
                 if self.is_not_2fa_compliant(request, organization):
                     logger.info(
                         "access.not-2fa-compliant",
-                        extra={"organization_id": organization.id, "user_id": request.user.id},
+                        extra=extra,
                     )
                     raise TwoFactorRequired()
+
+                if self.is_member_disabled_from_limit(request, organization):
+                    logger.info(
+                        "access.member-disabled-from-limit",
+                        extra=extra,
+                    )
+                    raise MemberDisabledOverLimit(organization)

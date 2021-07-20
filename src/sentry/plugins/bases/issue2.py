@@ -1,23 +1,22 @@
-from rest_framework.response import Response
-from social_auth.models import UserSocialAuth
-
 from django.conf import settings
 from django.conf.urls import url
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.utils.html import format_html
+from rest_framework.response import Response
 
 from sentry.api.serializers.models.plugin import PluginSerializer
 
 # api compat
 from sentry.exceptions import PluginError  # NOQA
 from sentry.models import Activity, GroupMeta
-from sentry.plugins.base.v1 import Plugin
 from sentry.plugins.base.configuration import react_plugin_config
+from sentry.plugins.base.v1 import Plugin
 from sentry.plugins.endpoints import PluginGroupEndpoint
 from sentry.signals import issue_tracker_used
 from sentry.utils.auth import get_auth_providers
 from sentry.utils.http import absolute_uri
 from sentry.utils.safe import safe_execute
+from social_auth.models import UserSocialAuth
 
 
 # TODO(dcramer): remove this in favor of GroupEndpoint
@@ -90,7 +89,7 @@ class IssueTrackingPlugin2(Plugin):
         """
         assert self.auth_provider, "There is no auth provider configured for this plugin."
 
-        if not user.is_authenticated():
+        if not user.is_authenticated:
             return None
 
         try:
@@ -106,7 +105,7 @@ class IssueTrackingPlugin2(Plugin):
         if self.auth_provider is None:
             return False
 
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return True
 
         return not UserSocialAuth.objects.filter(

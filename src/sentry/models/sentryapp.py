@@ -1,22 +1,29 @@
-import uuid
-import itertools
 import hmac
+import itertools
+import uuid
+from hashlib import sha256
 
 from django.db import models
-from django.utils import timezone
+from django.db.models import QuerySet
 from django.template.defaultfilters import slugify
-from hashlib import sha256
-from sentry.utils import metrics
-from sentry.constants import SentryAppStatus, SENTRY_APP_SLUG_MAX_LENGTH
-from sentry.models.apiscopes import HasApiScopes
+from django.utils import timezone
+
+from sentry.constants import (
+    SENTRY_APP_SLUG_MAX_LENGTH,
+    SentryAppInstallationStatus,
+    SentryAppStatus,
+)
 from sentry.db.models import (
     ArrayField,
     BoundedPositiveIntegerField,
     EncryptedJsonField,
     FlexibleForeignKey,
+    ParanoidManager,
     ParanoidModel,
 )
+from sentry.models.apiscopes import HasApiScopes
 from sentry.models.sentryappinstallation import SentryAppInstallation
+from sentry.utils import metrics
 
 # When a developer selects to receive "<Resource> Webhooks" it really means
 # listening to a list of specific events. This is a mapping of what those
@@ -58,7 +65,7 @@ def generate_slug(name, is_internal=False):
     slug = slugify(name)
     # for internal, add some uuid to make it unique
     if is_internal:
-        slug = "{}-{}".format(slug, default_uuid()[:UUID_CHARS_IN_SLUG])
+        slug = f"{slug}-{default_uuid()[:UUID_CHARS_IN_SLUG]}"
 
     return slug
 
@@ -71,8 +78,18 @@ def track_response_code(status, integration_slug, webhook_event):
     )
 
 
+class SentryAppManager(ParanoidManager):
+    def get_alertable_sentry_apps(self, organization_id: int) -> QuerySet:
+        return self.filter(
+            installations__organization_id=organization_id,
+            is_alertable=True,
+            installations__status=SentryAppInstallationStatus.INSTALLED,
+            installations__date_deleted=None,
+        ).distinct()
+
+
 class SentryApp(ParanoidModel, HasApiScopes):
-    __core__ = True
+    __include_in_export__ = True
 
     application = models.OneToOneField(
         "sentry.ApiApplication", null=True, on_delete=models.SET_NULL, related_name="sentry_app"
@@ -120,6 +137,8 @@ class SentryApp(ParanoidModel, HasApiScopes):
         "sentry.User", null=True, on_delete=models.SET_NULL, db_constraint=False
     )
     creator_label = models.TextField(null=True)
+
+    objects = SentryAppManager()
 
     class Meta:
         app_label = "sentry"

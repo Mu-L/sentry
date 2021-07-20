@@ -1,11 +1,12 @@
-from django.utils.encoding import force_text, python_2_unicode_compatible
 from datetime import timedelta
-from django.db import models, transaction
-from django.utils import timezone
 from uuid import uuid4
 
+from django.db import models, transaction
+from django.utils import timezone
+from django.utils.encoding import force_text, python_2_unicode_compatible
+
+from sentry.db.models import BaseManager, FlexibleForeignKey, Model, sane_repr
 from sentry.models.apiscopes import HasApiScopes
-from sentry.db.models import Model, BaseManager, FlexibleForeignKey, sane_repr
 
 DEFAULT_EXPIRATION = timedelta(days=30)
 
@@ -20,7 +21,7 @@ def generate_token():
 
 @python_2_unicode_compatible
 class ApiToken(Model, HasApiScopes):
-    __core__ = True
+    __include_in_export__ = True
 
     # users can generate tokens without being application-bound
     application = FlexibleForeignKey("sentry.ApiApplication", null=True)

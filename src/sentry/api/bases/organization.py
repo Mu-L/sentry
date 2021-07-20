@@ -1,13 +1,16 @@
-from rest_framework.exceptions import PermissionDenied, ParseError
-from django.core.cache import cache
-
 import sentry_sdk
+from django.core.cache import cache
+from rest_framework.exceptions import ParseError, PermissionDenied
 
 from sentry.api.base import Endpoint
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.helpers.environments import get_environments
 from sentry.api.permissions import SentryPermission
-from sentry.api.utils import get_date_range_from_params, InvalidParams
+from sentry.api.utils import (
+    InvalidParams,
+    get_date_range_from_params,
+    is_member_disabled_from_limit,
+)
 from sentry.auth.superuser import is_active_superuser
 from sentry.constants import ALL_ACCESS_PROJECTS
 from sentry.models import (
@@ -19,9 +22,10 @@ from sentry.models import (
     ReleaseProject,
 )
 from sentry.utils import auth
-from sentry.utils.hashlib import hash_values
-from sentry.utils.sdk import bind_organization_context
 from sentry.utils.compat import map
+from sentry.utils.hashlib import hash_values
+from sentry.utils.numbers import format_grouped_length
+from sentry.utils.sdk import bind_organization_context
 
 
 class NoProjects(Exception):
@@ -58,6 +62,9 @@ class OrganizationPermission(SentryPermission):
         self.determine_access(request, organization)
         allowed_scopes = set(self.scope_map.get(request.method, []))
         return any(request.access.has_scope(s) for s in allowed_scopes)
+
+    def is_member_disabled_from_limit(self, request, organization):
+        return is_member_disabled_from_limit(request, organization)
 
 
 class OrganizationAuditPermission(OrganizationPermission):
@@ -209,7 +216,6 @@ class OrganizationEndpoint(Endpoint):
     ):
         qs = Project.objects.filter(organization=organization, status=ProjectStatus.VISIBLE)
         user = getattr(request, "user", None)
-
         # A project_id of -1 means 'all projects I have access to'
         # While no project_ids means 'all projects I am a member of'.
         if project_ids == ALL_ACCESS_PROJECTS:
@@ -302,18 +308,16 @@ class OrganizationEndpoint(Endpoint):
 
         len_projects = len(projects)
         sentry_sdk.set_tag("query.num_projects", len_projects)
-        sentry_sdk.set_tag(
-            "query.num_projects.grouped",
-            "<10" if len_projects < 10 else "<100" if len_projects < 100 else ">100",
-        )
+        sentry_sdk.set_tag("query.num_projects.grouped", format_grouped_length(len_projects))
 
-        environments = self.get_environments(request, organization)
         params = {
             "start": start,
             "end": end,
             "project_id": [p.id for p in projects],
             "organization_id": organization.id,
         }
+
+        environments = self.get_environments(request, organization)
         if environments:
             params["environment"] = [env.name for env in environments]
             params["environment_objects"] = environments
@@ -363,8 +367,7 @@ class OrganizationReleasesBaseEndpoint(OrganizationEndpoint):
             ) or request.auth.has_scope("project:write")
 
         if not (
-            has_valid_api_key
-            or (getattr(request, "user", None) and request.user.is_authenticated())
+            has_valid_api_key or (getattr(request, "user", None) and request.user.is_authenticated)
         ):
             return []
 

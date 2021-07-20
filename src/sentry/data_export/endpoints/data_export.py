@@ -1,21 +1,26 @@
+import sentry_sdk
 from django.core.exceptions import ValidationError
 from rest_framework import serializers
 from rest_framework.response import Response
+
 from sentry import features
 from sentry.api.base import EnvironmentMixin
-from sentry.api.bases.organization import OrganizationEndpoint, OrganizationDataExportPermission
-from sentry.api.event_search import get_filter, InvalidSearchQuery
+from sentry.api.bases.organization import OrganizationDataExportPermission, OrganizationEndpoint
 from sentry.api.serializers import serialize
-from sentry.api.utils import get_date_range_from_params
+from sentry.api.utils import InvalidParams, get_date_range_from_params
+from sentry.discover.arithmetic import is_equation, resolve_equation_list, strip_equation
+from sentry.exceptions import InvalidSearchQuery
 from sentry.models import Environment
+from sentry.search.events.fields import resolve_field_list
+from sentry.search.events.filter import get_filter
 from sentry.utils import metrics
 from sentry.utils.compat import map
 from sentry.utils.snuba import MAX_FIELDS
 
 from ..base import ExportQueryType
 from ..models import ExportedData
-from ..tasks import assemble_download
 from ..processors.discover import DiscoverProcessor
+from ..tasks import assemble_download
 
 
 class DataExportQuerySerializer(serializers.Serializer):
@@ -41,22 +46,45 @@ class DataExportQuerySerializer(serializers.Serializer):
         # Discover Pre-processing
         if data["query_type"] == ExportQueryType.DISCOVER_STR:
             # coerce the fields into a list as needed
-            fields = query_info.get("field", [])
-            if not isinstance(fields, list):
-                fields = [fields]
+            base_fields = query_info.get("field", [])
+            if not isinstance(base_fields, list):
+                base_fields = [base_fields]
 
-            if len(fields) > MAX_FIELDS:
+            equations = []
+            fields = []
+            if self.context.get("has_arithmetic"):
+                for field in base_fields:
+                    if is_equation(field):
+                        equations.append(strip_equation(field))
+                    else:
+                        fields.append(field)
+            else:
+                fields = base_fields
+
+            if len(base_fields) > MAX_FIELDS:
                 detail = f"You can export up to {MAX_FIELDS} fields at a time. Please delete some and try again."
+                raise serializers.ValidationError(detail)
+            elif len(base_fields) == 0:
+                raise serializers.ValidationError("at least one field is required to export")
+
+            if "query" not in query_info:
+                detail = "query is a required to export, please pass an empty string if you don't want to set one"
                 raise serializers.ValidationError(detail)
 
             query_info["field"] = fields
+            query_info["equations"] = equations
 
-            if "project" not in query_info:
+            if not query_info.get("project"):
                 projects = self.context["get_projects"]()
                 query_info["project"] = [project.id for project in projects]
 
             # make sure to fix the export start/end times to ensure consistent results
-            start, end = get_date_range_from_params(query_info)
+            try:
+                start, end = get_date_range_from_params(query_info)
+            except InvalidParams as e:
+                sentry_sdk.set_tag("query.error_reason", "Invalid date params")
+                raise serializers.ValidationError(str(e))
+
             if "statsPeriod" in query_info:
                 del query_info["statsPeriod"]
             if "statsPeriodStart" in query_info:
@@ -72,7 +100,18 @@ class DataExportQuerySerializer(serializers.Serializer):
                 organization_id=organization.id,
             )
             try:
-                get_filter(query_info["query"], processor.params)
+                snuba_filter = get_filter(query_info["query"], processor.params)
+                if len(equations) > 0:
+                    resolved_equations, _ = resolve_equation_list(equations, fields)
+                else:
+                    resolved_equations = []
+                resolve_field_list(
+                    fields.copy(),
+                    snuba_filter,
+                    auto_fields=True,
+                    auto_aggregations=True,
+                    resolved_equations=resolved_equations,
+                )
             except InvalidSearchQuery as err:
                 raise serializers.ValidationError(str(err))
 
@@ -108,6 +147,9 @@ class DataExportEndpoint(OrganizationEndpoint, EnvironmentMixin):
                     project_query, request, organization
                 ),
                 "get_projects": lambda: self.get_projects(request, organization),
+                "has_arithmetic": features.has(
+                    "organizations:discover-arithmetic", organization, actor=request.user
+                ),
             },
         )
         if not serializer.is_valid():

@@ -1,14 +1,14 @@
 import collections
-
 from collections import OrderedDict
 from datetime import timedelta
-from django.conf import settings
-from django.utils import timezone
 from enum import Enum
 
+from django.conf import settings
+from django.utils import timezone
+
+from sentry.utils.compat import map
 from sentry.utils.dates import to_datetime, to_timestamp
 from sentry.utils.services import Service
-from sentry.utils.compat import map
 
 ONE_MINUTE = 60
 ONE_HOUR = ONE_MINUTE * 60
@@ -346,7 +346,9 @@ class BaseTSDB(Service):
         """
         raise NotImplementedError
 
-    def get_range(self, model, keys, start, end, rollup=None, environment_ids=None):
+    def get_range(
+        self, model, keys, start, end, rollup=None, environment_ids=None, use_cache=False
+    ):
         """
         To get a range of data for group ID=[1, 2, 3]:
 
@@ -359,7 +361,7 @@ class BaseTSDB(Service):
         """
         raise NotImplementedError
 
-    def get_sums(self, model, keys, start, end, rollup=None, environment_id=None):
+    def get_sums(self, model, keys, start, end, rollup=None, environment_id=None, use_cache=False):
         range_set = self.get_range(
             model,
             keys,
@@ -367,6 +369,7 @@ class BaseTSDB(Service):
             end,
             rollup,
             environment_ids=[environment_id] if environment_id is not None else None,
+            use_cache=use_cache,
         )
         sum_set = {key: sum(p for _, p in points) for (key, points) in range_set.items()}
         return sum_set
@@ -412,7 +415,14 @@ class BaseTSDB(Service):
         raise NotImplementedError
 
     def get_distinct_counts_totals(
-        self, model, keys, start, end=None, rollup=None, environment_id=None
+        self,
+        model,
+        keys,
+        start,
+        end=None,
+        rollup=None,
+        environment_id=None,
+        use_cache=False,
     ):
         """
         Count distinct items during a time range.

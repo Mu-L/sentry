@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 @instrumented_task(name="sentry.tasks.reprocess_events", queue="events.reprocess_events")
 def reprocess_events(project_id, **kwargs):
-    from sentry.models import ProcessingIssue
-    from sentry.coreapi import insert_data_to_database_legacy
     from sentry import app
+    from sentry.coreapi import insert_data_to_database_legacy
+    from sentry.models import ProcessingIssue
 
     lock_key = "events:reprocess_events:%s" % project_id
     have_more = False
@@ -47,7 +47,7 @@ def create_reprocessing_report(project_id, event_id):
 
 @instrumented_task(name="sentry.tasks.clear_expired_raw_events", time_limit=15, soft_time_limit=10)
 def clear_expired_raw_events():
-    from sentry.models import RawEvent, ProcessingIssue, ReprocessingReport
+    from sentry.models import ProcessingIssue, RawEvent, ReprocessingReport
 
     def batched_delete(model_cls, **filter):
         # Django 1.6's `Queryset.delete` runs in this order:
@@ -62,7 +62,7 @@ def clear_expired_raw_events():
         # Better to delete a few rows than none.
         while True:
             # Django already loads this into memory, might as well do it
-            # explicitly. Makes check for result emptyness cheaper.
+            # explicitly. Makes check for result emptiness cheaper.
             result = set(model_cls.objects.filter(**filter)[:200].values_list("pk", flat=True))
             if not result:
                 break

@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.core.cache import cache
-from django.db import models, IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from sentry.db.models import (
@@ -73,7 +73,7 @@ class OrganizationOnboardingTask(Model):
     Onboarding tasks walk new Sentry orgs through basic features of Sentry.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     TASK_CHOICES = (
         (OnboardingTask.FIRST_PROJECT, "create_project"),

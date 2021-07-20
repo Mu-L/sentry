@@ -1,9 +1,9 @@
 __all__ = ("Breadcrumbs",)
 
 from sentry.interfaces.base import Interface
+from sentry.utils.dates import parse_timestamp, to_datetime, to_timestamp
 from sentry.utils.json import prune_empty_keys
 from sentry.utils.safe import get_path
-from sentry.utils.dates import to_timestamp, to_datetime, parse_timestamp
 
 
 class Breadcrumbs(Interface):
@@ -26,13 +26,13 @@ class Breadcrumbs(Interface):
     score = 800
 
     @classmethod
-    def to_python(cls, data):
+    def to_python(cls, data, **kwargs):
         values = []
         for index, crumb in enumerate(get_path(data, "values", filter=True, default=())):
             # TODO(ja): Handle already invalid and None breadcrumbs
             values.append(cls.normalize_crumb(crumb))
 
-        return cls(values=values)
+        return super().to_python({"values": values}, **kwargs)
 
     def to_json(self):
         return prune_empty_keys(

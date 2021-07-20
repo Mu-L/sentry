@@ -1,4 +1,4 @@
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.testutils import TestCase
 
@@ -39,7 +39,7 @@ class ReactPageViewTest(TestCase):
 
         self.assertRedirects(resp, reverse("sentry-auth-organization", args=[org.slug]))
 
-        # ensure we dont redirect to auth if its not a valid org
+        # ensure we don't redirect to auth if its not a valid org
         path = reverse("sentry-organization-home", args=["foobar"])
 
         resp = self.client.get(path)
@@ -47,7 +47,7 @@ class ReactPageViewTest(TestCase):
         assert resp.status_code == 302
         assert resp["Location"] != reverse("sentry-auth-organization", args=[org.slug])
 
-        # ensure we dont redirect with valid membership
+        # ensure we don't redirect with valid membership
         path = reverse("sentry-organization-home", args=[org.slug])
 
         self.login_as(owner)
@@ -72,3 +72,24 @@ class ReactPageViewTest(TestCase):
         assert resp.status_code == 200
         self.assertTemplateUsed(resp, "sentry/bases/react.html")
         assert resp.context["request"]
+
+    def test_org_subpages_capture_slug(self):
+        owner = self.create_user("bar@example.com")
+        org = self.create_organization(owner=owner)
+        # User is *not* logged in. Check for redirect to org's auth login.
+
+        # TODO(RyanSkonnord): Generalize URL pattern; add
+        #  f"/organizations/{org.slug}/new_page_that_does_not_exist_yet/"
+        #  to list of test paths without causing other regressions.
+        #  See OrganizationReleasesTest.test_detail_global_header,
+        #  which exposes a buggy interaction with appendTrailingSlash
+        #  in static/app/routes.tsx.
+        for path in [
+            f"/organizations/{org.slug}/settings/",
+            f"/organizations/{org.slug}/discover/",
+            f"/settings/{org.slug}/developer-settings/",
+            f"/settings/{org.slug}/new_page_that_does_not_exist_yet/",
+        ]:
+            resp = self.client.get(path)
+            assert resp.status_code == 302
+            assert resp.url == f"/auth/login/{org.slug}/"

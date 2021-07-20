@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {UserFeedbackEmpty} from 'app/views/userFeedback/userFeedbackEmpty';
@@ -24,7 +22,7 @@ describe('UserFeedbackEmpty', function () {
       routerContext
     );
 
-    expect(wrapper.find('UserFeedbackLanding').exists()).toBe(true);
+    expect(wrapper.find('OnboardingPanel').exists()).toBe(true);
   });
 
   it('renders warning for project with any user feedback', function () {
@@ -71,7 +69,7 @@ describe('UserFeedbackEmpty', function () {
       routerContext
     );
 
-    expect(wrapper.find('UserFeedbackLanding').exists()).toBe(true);
+    expect(wrapper.find('OnboardingPanel').exists()).toBe(true);
   });
 
   it('renders warning for multi project query with any user feedback', function () {

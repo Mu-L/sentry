@@ -1,23 +1,28 @@
-from collections import namedtuple, OrderedDict
-from copy import deepcopy
-from contextlib import contextmanager
-from datetime import datetime, timedelta
-from dateutil.parser import parse as parse_datetime
-import logging
 import functools
+import logging
 import os
-import pytz
 import re
 import time
-import urllib3
-import sentry_sdk
-from sentry_sdk import Hub
-
+from collections import OrderedDict, namedtuple
 from concurrent.futures import ThreadPoolExecutor
-from django.conf import settings
+from contextlib import contextmanager
+from copy import deepcopy
+from datetime import datetime, timedelta
+from hashlib import sha1
+from operator import itemgetter
+from typing import Any, Callable, List, Mapping, MutableMapping, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
 
-from sentry import quotas
+import pytz
+import sentry_sdk
+import urllib3
+from dateutil.parser import parse as parse_datetime
+from django.conf import settings
+from django.core.cache import cache
+from sentry_sdk import Hub
+from snuba_sdk.legacy import json_to_snql
+from snuba_sdk.query import Query
+
 from sentry.models import (
     Environment,
     Group,
@@ -29,12 +34,12 @@ from sentry.models import (
     ReleaseProject,
 )
 from sentry.net.http import connection_from_url
-from sentry.utils import metrics, json
-from sentry.utils.dates import to_timestamp
-from sentry.snuba.events import Columns
 from sentry.snuba.dataset import Dataset
+from sentry.snuba.events import Columns
+from sentry.utils import json, metrics
 from sentry.utils.compat import map
-
+from sentry.utils.dates import outside_retention_with_modified_start, to_timestamp
+from sentry.utils.snql import should_use_snql
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +51,17 @@ MAX_HASHES = 5000
 # in a single query to lessen the load on snuba
 MAX_FIELDS = 20
 
+SAFE_FUNCTIONS = frozenset(["NOT IN"])
 SAFE_FUNCTION_RE = re.compile(r"-?[a-zA-Z_][a-zA-Z0-9_]*$")
 # Match any text surrounded by quotes, can't use `.*` here since it
 # doesn't include new lines,
 QUOTED_LITERAL_RE = re.compile(r"^'[\s\S]*'$")
 
 MEASUREMENTS_KEY_RE = re.compile(r"^measurements\.([a-zA-Z0-9-_.]+)$")
+# Matches span op breakdown field
+SPAN_OP_BREAKDOWNS_FIELD_RE = re.compile(r"^spans\.([a-zA-Z0-9-_.]+)$")
+# Matches span op breakdown snuba key
+SPAN_OP_BREAKDOWNS_KEY_RE = re.compile(r"^ops\.([a-zA-Z0-9-_.]+)$")
 
 # Global Snuba request option override dictionary. Only intended
 # to be used with the `options_override` contextmanager below.
@@ -343,8 +353,11 @@ def get_snuba_column_name(name, dataset=Dataset.Events):
         return name
 
     measurement_name = get_measurement_name(name)
+    span_op_breakdown_name = get_span_op_breakdown_name(name)
     if "measurements_key" in DATASETS[dataset] and measurement_name:
         default = f"measurements[{measurement_name}]"
+    elif "span_op_breakdowns_key" in DATASETS[dataset] and span_op_breakdown_name:
+        default = f"span_op_breakdowns[{span_op_breakdown_name}]"
     else:
         default = f"tags[{name}]"
 
@@ -375,7 +388,9 @@ def get_function_index(column_expr, depth=0):
             # The assumption here is that a list that follows a string means
             # the string is a function name
             if isinstance(column_expr[i], str) and isinstance(column_expr[i + 1], (tuple, list)):
-                assert SAFE_FUNCTION_RE.match(column_expr[i])
+                assert column_expr[i] in SAFE_FUNCTIONS or SAFE_FUNCTION_RE.match(
+                    column_expr[i]
+                ), column_expr[i]
                 index = i
                 break
             else:
@@ -504,13 +519,11 @@ def _prepare_query_params(query_params):
             else:
                 query_params.conditions.append((col, "IN", keys))
 
-    retention = quotas.get_event_retention(organization=Organization(organization_id))
-    if retention:
-        start = max(start, datetime.utcnow() - timedelta(days=retention))
-        if start > end:
-            raise QueryOutsideRetentionError(
-                "Invalid date range. Please try a more recent date range."
-            )
+    expired, start = outside_retention_with_modified_start(
+        start, end, Organization(organization_id)
+    )
+    if expired:
+        raise QueryOutsideRetentionError("Invalid date range. Please try a more recent date range.")
 
     # if `shrink_time_window` pushed `start` after `end` it means the user queried
     # a Group for T1 to T2 when the group was only active for T3 to T4, so the query
@@ -615,8 +628,9 @@ def raw_query(
     rollup=None,
     referrer=None,
     is_grouprelease=False,
+    use_cache=False,
     **kwargs,
-):
+) -> Mapping[str, Any]:
     """
     Sends a query to snuba.  See `SnubaQueryParams` docstring for param
     descriptions.
@@ -633,52 +647,136 @@ def raw_query(
         is_grouprelease=is_grouprelease,
         **kwargs,
     )
-    return bulk_raw_query([snuba_params], referrer=referrer)[0]
+
+    use_snql = should_use_snql(referrer)
+
+    return bulk_raw_query(
+        [snuba_params],
+        referrer=referrer,
+        use_cache=use_cache,
+        use_snql=use_snql,
+    )[0]
 
 
-def bulk_raw_query(snuba_param_list, referrer=None):
+SnubaQuery = Union[Query, MutableMapping[str, Any]]
+Translator = Callable[[Any], Any]
+SnubaQueryBody = Tuple[SnubaQuery, Translator, Translator]
+ResultSet = List[Mapping[str, Any]]  # TODO: Would be nice to make this a concrete structure
+
+
+def raw_snql_query(
+    query: Query,
+    referrer: Optional[str] = None,
+    use_cache: bool = False,
+) -> Mapping[str, Any]:
+    # XXX (evanh): This function does none of the extra processing that the
+    # other functions do here. It does not add any automatic conditions, format
+    # results, nothing. Use at your own risk.
+    metrics.incr("snql.sdk.api", tags={"referrer": referrer or "unknown"})
+    params: SnubaQuery = (query, lambda x: x, lambda x: x)
+    return _apply_cache_and_build_results([params], referrer=referrer, use_cache=use_cache)[0]
+
+
+def get_cache_key(query: SnubaQuery) -> str:
+    if isinstance(query, Query):
+        hashable = str(query)
+    else:
+        hashable = json.dumps(query, sort_keys=True)
+
+    # sqc - Snuba Query Cache
+    return f"sqc:{sha1(hashable.encode('utf-8')).hexdigest()}"
+
+
+def bulk_raw_query(
+    snuba_param_list: Sequence[SnubaQueryParams],
+    referrer: Optional[str] = None,
+    use_cache: Optional[bool] = False,
+    use_snql: Optional[bool] = None,
+) -> ResultSet:
+    params = map(_prepare_query_params, snuba_param_list)
+    return _apply_cache_and_build_results(
+        params, referrer=referrer, use_cache=use_cache, use_snql=use_snql
+    )
+
+
+def _apply_cache_and_build_results(
+    snuba_param_list: Sequence[SnubaQueryBody],
+    referrer: Optional[str] = None,
+    use_cache: Optional[bool] = False,
+    use_snql: Optional[bool] = None,
+) -> ResultSet:
     headers = {}
     if referrer:
         headers["referer"] = referrer
 
-    query_param_list = map(_prepare_query_params, snuba_param_list)
+    # Store the original position of the query so that we can maintain the order
+    query_param_list = list(enumerate(snuba_param_list))
 
-    def snuba_query(params):
-        query_params, forward, reverse, thread_hub = params
-        try:
-            with timer("snuba_query"):
-                referrer = headers.get("referer", "<unknown>")
-                if SNUBA_INFO:
-                    logger.info("{}.body: {}".format(referrer, json.dumps(query_params)))
-                    query_params["debug"] = True
-                body = json.dumps(query_params)
-                with thread_hub.start_span(op="snuba", description=f"query {referrer}") as span:
-                    span.set_tag("referrer", referrer)
-                    for param_key, param_data in query_params.items():
-                        span.set_data(param_key, param_data)
-                    return (
-                        _snuba_pool.urlopen("POST", "/query", body=body, headers=headers),
-                        forward,
-                        reverse,
-                    )
-        except urllib3.exceptions.HTTPError as err:
-            raise SnubaError(err)
+    results = []
 
+    if use_cache:
+        cache_keys = [get_cache_key(query_params) for _, query_params in query_param_list]
+        cache_data = cache.get_many(cache_keys)
+        to_query: List[Tuple[int, SnubaQueryBody, Optional[str]]] = []
+        for (query_pos, query_params), cache_key in zip(query_param_list, cache_keys):
+            cached_result = cache_data.get(cache_key)
+            metric_tags = {"referrer": referrer} if referrer else None
+            if cached_result is None:
+                metrics.incr("snuba.query_cache.miss", tags=metric_tags)
+                to_query.append((query_pos, query_params, cache_key))
+            else:
+                metrics.incr("snuba.query_cache.hit", tags=metric_tags)
+                results.append((query_pos, json.loads(cached_result)))
+    else:
+        to_query = [(query_pos, query_params, None) for query_pos, query_params in query_param_list]
+
+    if to_query:
+        query_results = _bulk_snuba_query(map(itemgetter(1), to_query), headers, use_snql)
+        for result, (query_pos, _, cache_key) in zip(query_results, to_query):
+            if cache_key:
+                cache.set(cache_key, json.dumps(result), settings.SENTRY_SNUBA_CACHE_TTL_SECONDS)
+            results.append((query_pos, result))
+
+    # Sort so that we get the results back in the original param list order
+    results.sort()
+    # Drop the sort order val
+    return map(itemgetter(1), results)
+
+
+def _bulk_snuba_query(
+    snuba_param_list: Sequence[SnubaQueryBody],
+    headers: Mapping[str, str],
+    use_snql: Optional[bool] = None,
+) -> ResultSet:
     with sentry_sdk.start_span(
         op="start_snuba_query",
-        description="running {} snuba queries".format(len(snuba_param_list)),
+        description=f"running {len(snuba_param_list)} snuba queries",
     ) as span:
-        span.set_tag("referrer", headers.get("referer", "<unknown>"))
+        query_referrer = headers.get("referer", "<unknown>")
+        # We set both span + sdk level, this is cause 1 txn/error might query snuba more than once
+        # but we still want to know a general sense of how referrers impact performance
+        span.set_tag("query.referrer", query_referrer)
+        sentry_sdk.set_tag("query.referrer", query_referrer)
+        # This is confusing because this function is overloaded right now with three cases:
+        # 1. A legacy JSON query (_snuba_query)
+        # 2. A SnQL query of a legacy query (_legacy_snql_query)
+        # 3. A direct SnQL query using the new SDK (_snql_query)
+        query_fn = _snuba_query
+        if isinstance(snuba_param_list[0][0], Query):
+            query_fn = _snql_query
+        elif use_snql:
+            query_fn = _legacy_snql_query
+
         if len(snuba_param_list) > 1:
             query_results = list(
                 _query_thread_pool.map(
-                    snuba_query, [params + (Hub(Hub.current),) for params in query_param_list]
+                    query_fn,
+                    [(params, Hub(Hub.current), headers) for params in snuba_param_list],
                 )
             )
         else:
-            # No need to submit to the thread pool if we're just performing a
-            # single query
-            query_results = [snuba_query(query_param_list[0] + (Hub(Hub.current),))]
+            # No need to submit to the thread pool if we're just performing a single query
+            query_results = [query_fn((snuba_param_list[0], Hub(Hub.current), headers))]
 
     results = []
     for response, _, reverse in query_results:
@@ -722,6 +820,76 @@ def bulk_raw_query(snuba_param_list, referrer=None):
     return results
 
 
+RawResult = Tuple[urllib3.response.HTTPResponse, Callable[[Any], Any], Callable[[Any], Any]]
+
+
+def _snuba_query(params: Tuple[SnubaQuery, Hub, Mapping[str, str]]) -> RawResult:
+    query_data, thread_hub, headers = params
+    query_params, forward, reverse = query_data
+    try:
+        with timer("snuba_query"):
+            referrer = headers.get("referer", "<unknown>")
+            if SNUBA_INFO:
+                # We want debug in the body, but not in the logger, so dump the json twice
+                logger.info(f"{referrer}.body: {json.dumps(query_params)}")
+                query_params["debug"] = True
+            body = json.dumps(query_params)
+            with thread_hub.start_span(op="snuba", description=f"query {referrer}") as span:
+                span.set_tag("referrer", referrer)
+                for param_key, param_data in query_params.items():
+                    span.set_data(param_key, param_data)
+                return (
+                    _snuba_pool.urlopen("POST", "/query", body=body, headers=headers),
+                    forward,
+                    reverse,
+                )
+    except urllib3.exceptions.HTTPError as err:
+        raise SnubaError(err)
+
+
+def _snql_query(params: Tuple[SnubaQuery, Hub, Mapping[str, str]]) -> RawResult:
+    # Eventually we can get rid of this wrapper, but for now it's cleaner to unwrap
+    # the params here than in the calling function.
+    query_data, thread_hub, headers = params
+    query, forward, reverse = query_data
+    assert isinstance(query, Query)
+    try:
+        return _raw_snql_query(query, thread_hub, headers), forward, reverse
+    except urllib3.exceptions.HTTPError as err:
+        raise SnubaError(err)
+
+
+def _legacy_snql_query(params: Tuple[SnubaQuery, Hub, Mapping[str, str]]) -> RawResult:
+    # Convert the JSON query to SnQL and run it
+    query_data, thread_hub, headers = params
+    query_params, forward, reverse = query_data
+
+    try:
+        snql_entity = query_params["dataset"]
+        query = json_to_snql(query_params, snql_entity)
+        result = _raw_snql_query(query, Hub(thread_hub), headers)
+    except urllib3.exceptions.HTTPError as err:
+        raise SnubaError(err)
+
+    return result, forward, reverse
+
+
+def _raw_snql_query(
+    query: Query, thread_hub: Hub, headers: Mapping[str, str]
+) -> urllib3.response.HTTPResponse:
+    with timer("snql_query"):
+        referrer = headers.get("referer", "<unknown>")
+        if SNUBA_INFO:
+            logger.info(f"{referrer}.body: {query}")
+            query = query.set_debug(True)
+
+        body = query.snuba()
+        with thread_hub.start_span(op="snuba_snql", description=f"query {referrer}") as span:
+            span.set_tag("referrer", referrer)
+            span.set_data("snql", str(query))
+            return _snuba_pool.urlopen("POST", f"/{query.dataset}/snql", body=body, headers=headers)
+
+
 def query(
     dataset=None,
     start=None,
@@ -732,6 +900,7 @@ def query(
     aggregations=None,
     selected_columns=None,
     totals=None,
+    use_cache=False,
     **kwargs,
 ):
 
@@ -751,6 +920,7 @@ def query(
             aggregations=aggregations,
             selected_columns=selected_columns,
             totals=totals,
+            use_cache=use_cache,
             **kwargs,
         )
     except (QueryOutsideRetentionError, QueryOutsideGroupActivityError):
@@ -823,6 +993,10 @@ def resolve_column(dataset):
         if "measurements_key" in DATASETS[dataset] and measurement_name:
             return f"measurements[{measurement_name}]"
 
+        span_op_breakdown_name = get_span_op_breakdown_name(col)
+        if "span_op_breakdowns_key" in DATASETS[dataset] and span_op_breakdown_name:
+            return f"span_op_breakdowns[{span_op_breakdown_name}]"
+
         return f"tags[{col}]"
 
     return _resolve_column
@@ -843,12 +1017,9 @@ def resolve_condition(cond, column_resolver):
                                        current dataset.
     """
     index = get_function_index(cond)
-    if index is not None:
-        # IN conditions are detected as a function but aren't really.
-        if cond[index] == "IN":
-            cond[0] = column_resolver(cond[0])
-            return cond
-        elif cond[index] in FUNCTION_TO_OPERATOR:
+    # IN/NOT IN conditions are detected as a function but aren't really.
+    if index is not None and cond[index] not in ("IN", "NOT IN"):
+        if cond[index] in FUNCTION_TO_OPERATOR:
             func_args = cond[index + 1]
             for i, arg in enumerate(func_args):
                 if i == 0:
@@ -981,13 +1152,13 @@ def _aliased_query_impl(
 # TODO (evanh) Since we are assuming that all string values are columns,
 # this will get tricky if we ever have complex columns where there are
 # string arguments to the functions that aren't columns
-def resolve_complex_column(col, resolve_func):
+def resolve_complex_column(col, resolve_func, ignored):
     args = col[1]
 
     for i in range(len(args)):
         if isinstance(args[i], (list, tuple)):
-            resolve_complex_column(args[i], resolve_func)
-        elif isinstance(args[i], str):
+            resolve_complex_column(args[i], resolve_func, ignored)
+        elif isinstance(args[i], str) and args[i] not in ignored:
             args[i] = resolve_func(args[i])
 
 
@@ -995,19 +1166,24 @@ def resolve_snuba_aliases(snuba_filter, resolve_func, function_translations=None
     resolved = snuba_filter.clone()
     translated_columns = {}
     derived_columns = set()
+    aggregations = resolved.aggregations
+
     if function_translations:
         for snuba_name, sentry_name in function_translations.items():
             derived_columns.add(snuba_name)
             translated_columns[snuba_name] = sentry_name
 
     selected_columns = resolved.selected_columns
+    aggregation_aliases = [aggregation[-1] for aggregation in aggregations]
     if selected_columns:
         for (idx, col) in enumerate(selected_columns):
             if isinstance(col, (list, tuple)):
                 if len(col) == 3:
                     # Add the name from columns, and remove project backticks so its not treated as a new col
                     derived_columns.add(col[2].strip("`"))
-                resolve_complex_column(col, resolve_func)
+                # Equations use aggregation aliases as arguments, and we don't want those resolved since they'll resolve
+                # as tags instead
+                resolve_complex_column(col, resolve_func, aggregation_aliases)
             else:
                 name = resolve_func(col)
                 selected_columns[idx] = name
@@ -1028,7 +1204,6 @@ def resolve_snuba_aliases(snuba_filter, resolve_func, function_translations=None
             groupby[idx] = name
         resolved.groupby = groupby
 
-    aggregations = resolved.aggregations
     # need to get derived_columns first, so that they don't get resolved as functions
     derived_columns = derived_columns.union([aggregation[2] for aggregation in aggregations])
     for aggregation in aggregations or []:
@@ -1042,7 +1217,16 @@ def resolve_snuba_aliases(snuba_filter, resolve_func, function_translations=None
                 if func_index is not None:
                     # Resolve the columns on the nested function, and add a wrapping
                     # list to become a valid query expression.
-                    formatted.append([argument[0], [resolve_func(col) for col in argument[1]]])
+                    resolved_args = []
+                    for col in argument[1]:
+                        if col is None or isinstance(col, float):
+                            resolved_args.append(col)
+                        elif isinstance(col, list):
+                            resolve_complex_column(col, resolve_func, aggregation_aliases)
+                            resolved_args.append(col)
+                        else:
+                            resolved_args.append(resolve_func(col))
+                    formatted.append([argument[0], resolved_args])
                 else:
                     # Parameter is a list of fields.
                     formatted.append(
@@ -1098,15 +1282,16 @@ def get_json_type(snuba_type):
         return "string"
 
     # Ignore Nullable part
-    nullable_match = re.search(r"^Nullable\((.+)\)$", snuba_type)
+    if snuba_type.startswith("Nullable("):
+        snuba_type = snuba_type[9:-1]
 
-    if nullable_match:
-        snuba_type = nullable_match.group(1)
-
-    # Check for array
-    array_match = re.search(r"^Array\(.+\)$", snuba_type)
-    if array_match:
+    if snuba_type.startswith("Array("):
         return "array"
+
+    # timestamp is DateTime, whereas toStartOf{Hour,Day} are
+    # DateTime('UTC') or DateTime('Universal')
+    if snuba_type.startswith("DateTime("):
+        return "date"
 
     return JSON_TYPE_MAP.get(snuba_type, "string")
 
@@ -1318,9 +1503,43 @@ def is_duration_measurement(key):
         "measurements.fid",
         "measurements.ttfb",
         "measurements.ttfb.requesttime",
+        "measurements.app_start_cold",
+        "measurements.app_start_warm",
     ]
+
+
+def is_span_op_breakdown(key):
+    return isinstance(key, str) and get_span_op_breakdown_name(key) is not None
 
 
 def get_measurement_name(measurement):
     match = MEASUREMENTS_KEY_RE.match(measurement)
     return match.group(1).lower() if match else None
+
+
+def get_span_op_breakdown_name(breakdown):
+    match = SPAN_OP_BREAKDOWNS_FIELD_RE.match(breakdown)
+    if match:
+        breakdown_key = match.group(1).lower()
+        if breakdown_key == "total.time":
+            return breakdown_key
+        return f"ops.{breakdown_key}"
+    return None
+
+
+def get_array_column_alias(array_column):
+    # array column prefix may be aliased differently to the user (i.e. the product)
+    if array_column == "span_op_breakdowns":
+        return "spans"
+    return array_column
+
+
+def get_span_op_breakdown_key_name(breakdown_key):
+    match = SPAN_OP_BREAKDOWNS_KEY_RE.match(breakdown_key)
+    return match.group(1).lower() if match else breakdown_key
+
+
+def get_array_column_field(array_column, internal_key):
+    if array_column == "span_op_breakdowns":
+        return get_span_op_breakdown_key_name(internal_key)
+    return internal_key

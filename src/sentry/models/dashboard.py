@@ -9,7 +9,7 @@ class Dashboard(Model):
     A dashboard.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     title = models.CharField(max_length=255)
     created_by = FlexibleForeignKey("sentry.User")
@@ -50,7 +50,7 @@ class DashboardTombstone(Model):
     has been replaced or deleted for an organization.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     slug = models.CharField(max_length=255)
     organization = FlexibleForeignKey("sentry.Organization")
@@ -123,12 +123,12 @@ PREBUILT_DASHBOARDS = {
                         {
                             "name": "Known Users",
                             "conditions": "has:user.email !event.type:transaction",
-                            "fields": ["count_unique(user.email)"],
+                            "fields": ["count_unique(user)"],
                         },
                         {
                             "name": "Anonymous Users",
                             "conditions": "!has:user.email !event.type:transaction",
-                            "fields": ["count()"],
+                            "fields": ["count_unique(user)"],
                         },
                     ],
                 },
@@ -152,6 +152,7 @@ PREBUILT_DASHBOARDS = {
                 {
                     "title": "Errors by Country",
                     "displayType": "world_map",
+                    "interval": "5m",
                     "queries": [
                         {
                             "name": "Error counts",

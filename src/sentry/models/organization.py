@@ -1,16 +1,17 @@
 import logging
-
 from datetime import timedelta
 from enum import IntEnum
+from typing import Sequence
 
-from bitfield import BitField
 from django.conf import settings
-from django.core.urlresolvers import reverse
-from django.db import IntegrityError, models, transaction
+from django.db import IntegrityError, models, router, transaction
+from django.db.models import QuerySet
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.functional import cached_property
 
-from sentry import roles
+from bitfield import BitField
+from sentry import features, roles
 from sentry.app import locks
 from sentry.constants import RESERVED_ORGANIZATION_SLUGS, RESERVED_PROJECT_SLUGS
 from sentry.db.models import BaseManager, BoundedPositiveIntegerField, Model, sane_repr
@@ -56,8 +57,23 @@ OrganizationStatus._labels = {
 
 
 class OrganizationManager(BaseManager):
-    # def get_by_natural_key(self, slug):
-    #     return self.get(slug=slug)
+    def get_for_user_ids(self, user_ids: Sequence[int]) -> QuerySet:
+        """Returns the QuerySet of all organizations that a set of Users have access to."""
+        from sentry.models import OrganizationMember
+
+        return self.filter(
+            status=OrganizationStatus.VISIBLE,
+            id__in=OrganizationMember.objects.filter(user_id__in=user_ids).values("organization"),
+        )
+
+    def get_for_team_ids(self, team_ids: Sequence[int]) -> QuerySet:
+        """Returns the QuerySet of all organizations that a set of Teams have access to."""
+        from sentry.models import Team
+
+        return self.filter(
+            status=OrganizationStatus.VISIBLE,
+            id__in=Team.objects.filter(id__in=team_ids).values("organization"),
+        )
 
     def get_for_user(self, user, scope=None, only_visible=True):
         """
@@ -65,7 +81,7 @@ class OrganizationManager(BaseManager):
         """
         from sentry.models import OrganizationMember
 
-        if not user.is_authenticated():
+        if not user.is_authenticated:
             return []
 
         if settings.SENTRY_PUBLIC and scope is None:
@@ -90,8 +106,7 @@ class Organization(Model):
     An organization represents a group of individuals which maintain ownership of projects.
     """
 
-    __core__ = True
-
+    __include_in_export__ = True
     name = models.CharField(max_length=64)
     slug = models.SlugField(unique=True)
     status = BoundedPositiveIntegerField(
@@ -129,6 +144,10 @@ class Organization(Model):
                 "disable_new_visibility_features",
                 "Temporarily opt out of new visibility features and ui",
             ),
+            (
+                "require_email_verification",
+                "Require and enforce email verification for all members.",
+            ),
         ),
         default=1,
     )
@@ -138,6 +157,8 @@ class Organization(Model):
     class Meta:
         app_label = "sentry"
         db_table = "sentry_organization"
+        # TODO: Once we're on a version of Django that supports functional indexes,
+        # include index on `upper((slug::text))` here.
 
     __repr__ = sane_repr("owner_id", "name", "slug")
 
@@ -164,10 +185,16 @@ class Organization(Model):
         else:
             super().save(*args, **kwargs)
 
-    def delete(self):
+    def delete(self, **kwargs):
+        from sentry.models import NotificationSetting
+
         if self.is_default:
             raise Exception("You cannot delete the the default organization.")
-        return super().delete()
+
+        # There is no foreign key relationship so we have to manually cascade.
+        NotificationSetting.objects.remove_for_organization(self)
+
+        return super().delete(**kwargs)
 
     @cached_property
     def is_default(self):
@@ -221,6 +248,7 @@ class Organization(Model):
             AuditLogEntry,
             AuthProvider,
             Commit,
+            Environment,
             OrganizationAvatar,
             OrganizationIntegration,
             OrganizationMember,
@@ -233,7 +261,6 @@ class Organization(Model):
             ReleaseHeadCommit,
             Repository,
             Team,
-            Environment,
         )
 
         for from_member in OrganizationMember.objects.filter(
@@ -325,12 +352,12 @@ class Organization(Model):
         def do_update(queryset, params):
             model_name = queryset.model.__name__.lower()
             try:
-                with transaction.atomic():
+                with transaction.atomic(using=router.db_for_write(queryset.model)):
                     queryset.update(**params)
             except IntegrityError:
                 for instance in queryset:
                     try:
-                        with transaction.atomic():
+                        with transaction.atomic(using=router.db_for_write(queryset.model)):
                             instance.update(**params)
                     except IntegrityError:
                         logger.info(
@@ -362,10 +389,16 @@ class Organization(Model):
             OrganizationAvatar,
             OrganizationIntegration,
             ReleaseEnvironment,
-            ReleaseFile,
         )
 
-        ATTR_MODEL_LIST = (Commit, ReleaseCommit, ReleaseHeadCommit, Repository, Environment)
+        ATTR_MODEL_LIST = (
+            Commit,
+            Environment,
+            ReleaseCommit,
+            ReleaseFile,
+            ReleaseHeadCommit,
+            Repository,
+        )
 
         for model in INST_MODEL_LIST:
             queryset = model.objects.filter(organization=from_org)
@@ -412,15 +445,10 @@ class Organization(Model):
             context=context,
         ).send_async([o.email for o in owners])
 
-    def flag_has_changed(self, flag_name):
-        "Returns ``True`` if ``flag`` has changed since initialization."
-        return getattr(self.old_value("flags"), flag_name, None) != getattr(self.flags, flag_name)
-
-    def handle_2fa_required(self, request):
+    def _handle_requirement_change(self, request, task):
         from sentry.models import ApiKey
-        from sentry.tasks.auth import remove_2fa_non_compliant_members
 
-        actor_id = request.user.id if request.user and request.user.is_authenticated() else None
+        actor_id = request.user.id if request.user and request.user.is_authenticated else None
         api_key_id = (
             request.auth.id
             if hasattr(request, "auth") and isinstance(request.auth, ApiKey)
@@ -428,9 +456,20 @@ class Organization(Model):
         )
         ip_address = request.META["REMOTE_ADDR"]
 
-        remove_2fa_non_compliant_members.delay(
-            self.id, actor_id=actor_id, actor_key_id=api_key_id, ip_address=ip_address
-        )
+        task.delay(self.id, actor_id=actor_id, actor_key_id=api_key_id, ip_address=ip_address)
+
+    def handle_2fa_required(self, request):
+        from sentry.tasks.auth import remove_2fa_non_compliant_members
+
+        self._handle_requirement_change(request, remove_2fa_non_compliant_members)
+
+    def handle_email_verification_required(self, request):
+        from sentry.tasks.auth import remove_email_verification_non_compliant_members
+
+        if features.has("organizations:required-email-verification", self):
+            self._handle_requirement_change(
+                request, remove_email_verification_non_compliant_members
+            )
 
     def get_url_viewname(self):
         return "sentry-organization-issue-list"

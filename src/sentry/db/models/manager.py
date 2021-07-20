@@ -1,23 +1,22 @@
 import logging
 import threading
 import weakref
-
 from contextlib import contextmanager
 
+from celery.signals import task_postrun
 from django.conf import settings
+from django.core.signals import request_finished
 from django.db import router
 from django.db.models import Model
 from django.db.models.manager import Manager, QuerySet
-from django.db.models.signals import post_save, post_delete, post_init, class_prepared
-from django.core.signals import request_finished
+from django.db.models.signals import class_prepared, post_delete, post_init, post_save
 from django.utils.encoding import smart_text
-from celery.signals import task_postrun
 
 from sentry.utils.cache import cache
+from sentry.utils.compat import zip
 from sentry.utils.hashlib import md5_text
 
 from .query import create_or_update
-from sentry.utils.compat import zip
 
 __all__ = ("BaseManager", "OptionManager")
 
@@ -51,11 +50,11 @@ def make_key(model, prefix, kwargs):
         kwargs_bits.append(f"{k}={v}")
     kwargs_bits = ":".join(kwargs_bits)
 
-    return "{}:{}:{}".format(prefix, model.__name__, md5_text(kwargs_bits).hexdigest())
+    return f"{prefix}:{model.__name__}:{md5_text(kwargs_bits).hexdigest()}"
 
 
 class BaseQuerySet(QuerySet):
-    # XXX(dcramer): we prefer values_list, but we cant disable values as Django uses it
+    # XXX(dcramer): we prefer values_list, but we can't disable values as Django uses it
     # internally
     # def values(self, *args, **kwargs):
     #     raise NotImplementedError('Use ``values_list`` instead [performance].')
@@ -137,7 +136,7 @@ class BaseManager(Manager):
 
     def __getstate__(self):
         d = self.__dict__.copy()
-        # we cant serialize weakrefs
+        # we can't serialize weakrefs
         d.pop("_BaseManager__cache", None)
         d.pop("_BaseManager__local_cache", None)
         return d

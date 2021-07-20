@@ -1,18 +1,20 @@
+from django.conf import settings
 from django.db import transaction
-from django.db.models import Q, F
+from django.db.models import F, Q
 from rest_framework import serializers
 from rest_framework.response import Response
-from django.conf import settings
 
-from sentry.app import locks
-from sentry import roles, features
+from sentry import features, roles
 from sentry.api.bases.organization import OrganizationEndpoint, OrganizationPermission
 from sentry.api.paginator import OffsetPaginator
 from sentry.api.serializers import serialize
+from sentry.api.serializers.models import organization_member as organization_member_serializers
 from sentry.api.serializers.rest_framework import ListField
 from sentry.api.validators import AllowedEmailField
+from sentry.app import locks
 from sentry.models import (
     AuditLogEntryEvent,
+    ExternalActor,
     InviteStatus,
     OrganizationMember,
     OrganizationMemberTeam,
@@ -22,10 +24,10 @@ from sentry.models import (
 from sentry.models.authenticator import available_authenticators
 from sentry.search.utils import tokenize_query
 from sentry.signals import member_invited
-from .organization_member_details import get_allowed_roles
 from sentry.utils import metrics, ratelimits
 from sentry.utils.retries import TimedRetryPolicy
 
+from .organization_member_details import get_allowed_roles
 
 ERR_RATE_LIMITED = "You are being rate limited for too many invitations."
 
@@ -51,6 +53,10 @@ class MemberPermission(OrganizationPermission):
     }
 
 
+class MemberConflictValidationError(serializers.ValidationError):
+    pass
+
+
 class OrganizationMemberSerializer(serializers.Serializer):
     email = AllowedEmailField(max_length=75, required=True)
     role = serializers.ChoiceField(choices=roles.get_choices(), required=True)
@@ -64,14 +70,14 @@ class OrganizationMemberSerializer(serializers.Serializer):
         )
 
         if queryset.filter(invite_status=InviteStatus.APPROVED.value).exists():
-            raise serializers.ValidationError("The user %s is already a member" % email)
+            raise MemberConflictValidationError("The user %s is already a member" % email)
 
         if not self.context.get("allow_existing_invite_request"):
             if queryset.filter(
                 Q(invite_status=InviteStatus.REQUESTED_TO_BE_INVITED.value)
                 | Q(invite_status=InviteStatus.REQUESTED_TO_JOIN.value)
             ).exists():
-                raise serializers.ValidationError(
+                raise MemberConflictValidationError(
                     "There is an existing invite request for %s" % email
                 )
         return email
@@ -110,7 +116,6 @@ class OrganizationMemberIndexEndpoint(OrganizationEndpoint):
         )
 
         query = request.GET.get("query")
-
         if query:
             tokens = tokenize_query(query)
             for key, value in tokens.items():
@@ -148,6 +153,20 @@ class OrganizationMemberIndexEndpoint(OrganizationEndpoint):
                         ).distinct()
                     else:
                         queryset = queryset.filter(user__authenticator__isnull=True)
+                elif key == "hasExternalUsers":
+                    hasExternalUsers = "true" in value
+                    if hasExternalUsers:
+                        queryset = queryset.filter(
+                            user__actor_id__in=ExternalActor.objects.filter(
+                                organization=organization
+                            ).values_list("actor_id")
+                        )
+                    else:
+                        queryset = queryset.exclude(
+                            user__actor_id__in=ExternalActor.objects.filter(
+                                organization=organization
+                            ).values_list("actor_id")
+                        )
 
                 elif key == "query":
                     value = " ".join(value)
@@ -159,10 +178,18 @@ class OrganizationMemberIndexEndpoint(OrganizationEndpoint):
                 else:
                     queryset = queryset.none()
 
+        expand = request.GET.getlist("expand", [])
+
         return self.paginate(
             request=request,
             queryset=queryset,
-            on_results=lambda x: serialize(x, request.user),
+            on_results=lambda x: serialize(
+                x,
+                request.user,
+                serializer=organization_member_serializers.OrganizationMemberSerializer(
+                    expand=expand
+                ),
+            ),
             paginator_cls=OffsetPaginator,
         )
 

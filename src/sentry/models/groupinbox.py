@@ -1,12 +1,11 @@
-import jsonschema
 import logging
-
 from enum import Enum
 
+import jsonschema
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import FlexibleForeignKey, Model, JSONField
+from sentry.db.models import FlexibleForeignKey, JSONField, Model
 from sentry.models import Activity
 from sentry.signals import inbox_in, inbox_out
 
@@ -43,7 +42,7 @@ class GroupInbox(Model):
     A Group that is in the inbox.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     group = FlexibleForeignKey("sentry.Group", unique=True, db_constraint=False)
     project = FlexibleForeignKey("sentry.Project", null=True, db_constraint=False)

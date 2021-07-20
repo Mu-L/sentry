@@ -44,7 +44,7 @@ class ProjectServiceHookDetailsEndpoint(ProjectEndpoint):
         :param array[string] events: the events to subscribe to
         :auth: required
         """
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return self.respond(status=401)
 
         try:
@@ -95,7 +95,7 @@ class ProjectServiceHookDetailsEndpoint(ProjectEndpoint):
         :pparam string hook_id: the guid of the service hook.
         :auth: required
         """
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return self.respond(status=401)
 
         try:
@@ -114,4 +114,4 @@ class ProjectServiceHookDetailsEndpoint(ProjectEndpoint):
                 data=hook.get_audit_log_data(),
             )
 
-        return self.respond(serialize(hook, request.user), status=204)
+        return self.respond(status=204)

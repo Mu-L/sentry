@@ -1,7 +1,6 @@
-import React from 'react';
 import MockDate from 'mockdate';
 
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import DateRange from 'app/components/organizations/timeRangeSelector/dateRange';
 import ConfigStore from 'app/stores/configStore';
@@ -9,7 +8,7 @@ import ConfigStore from 'app/stores/configStore';
 // 2017-10-14T02:38:00.000Z
 // 2017-10-17T02:38:00.000Z
 const start = new Date(1507948680000);
-const end = new Date(1508207880000); //National Pasta Day
+const end = new Date(1508207880000); // National Pasta Day
 
 const getSelectedRange = wrapper => [
   wrapper.find('.rdrStartEdge').closest('DayCell').find('.rdrDayNumber span').text(),
@@ -46,8 +45,8 @@ describe('DateRange', function () {
     beforeEach(function () {
       onChange.mockReset();
     });
-    beforeEach(function () {
-      wrapper = mount(
+    beforeEach(async function () {
+      wrapper = mountWithTheme(
         <DateRange
           start={start}
           end={end}
@@ -58,6 +57,10 @@ describe('DateRange', function () {
         />,
         routerContext
       );
+
+      await tick();
+      await tick();
+      wrapper.update();
     });
 
     it('has the right max date', function () {
@@ -192,7 +195,7 @@ describe('DateRange', function () {
   describe('UTC', function () {
     beforeEach(function () {
       onChange.mockReset();
-      wrapper = mount(
+      wrapper = mountWithTheme(
         <DateRange
           start={start}
           end={end}

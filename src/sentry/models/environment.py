@@ -1,18 +1,19 @@
+import re
+
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
-from sentry.constants import ENVIRONMENT_NAME_PATTERN, ENVIRONMENT_NAME_MAX_LENGTH
+from sentry.constants import ENVIRONMENT_NAME_MAX_LENGTH, ENVIRONMENT_NAME_PATTERN
 from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, Model, sane_repr
 from sentry.utils import metrics
 from sentry.utils.cache import cache
 from sentry.utils.hashlib import md5_text
-import re
 
 OK_NAME_PATTERN = re.compile(ENVIRONMENT_NAME_PATTERN)
 
 
 class EnvironmentProject(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     project = FlexibleForeignKey("sentry.Project")
     environment = FlexibleForeignKey("sentry.Environment")
@@ -25,7 +26,7 @@ class EnvironmentProject(Model):
 
 
 class Environment(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     organization_id = BoundedPositiveIntegerField()
     projects = models.ManyToManyField("sentry.Project", through=EnvironmentProject)
@@ -53,7 +54,7 @@ class Environment(Model):
 
     @classmethod
     def get_cache_key(cls, organization_id, name):
-        return "env:2:{}:{}".format(organization_id, md5_text(name).hexdigest())
+        return f"env:2:{organization_id}:{md5_text(name).hexdigest()}"
 
     @classmethod
     def get_name_or_default(cls, name):

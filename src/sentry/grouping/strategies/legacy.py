@@ -1,11 +1,10 @@
-import re
 import posixpath
+import re
 
 from sentry.grouping.component import GroupingComponent
-from sentry.grouping.strategies.base import strategy
-from sentry.grouping.strategies.utils import remove_non_stacktrace_variants, has_url_origin
-from sentry.grouping.strategies.similarity_encoders import text_shingle_encoder, ident_encoder
-
+from sentry.grouping.strategies.base import produces_variants, strategy
+from sentry.grouping.strategies.similarity_encoders import ident_encoder, text_shingle_encoder
+from sentry.grouping.strategies.utils import has_url_origin, remove_non_stacktrace_variants
 
 _ruby_anon_func = re.compile(r"_\d{2,}")
 _filename_version_re = re.compile(
@@ -182,20 +181,21 @@ def single_exception_legacy(exception, context, **meta):
         if exception.value:
             value_component.update(contributes=True)
 
-    return GroupingComponent(
-        id="exception", values=[stacktrace_component, type_component, value_component]
-    )
+    return {
+        context["variant"]: GroupingComponent(
+            id="exception", values=[stacktrace_component, type_component, value_component]
+        )
+    }
 
 
-@strategy(
-    id="chained-exception:legacy", interfaces=["exception"], variants=["!system", "app"], score=2000
-)
+@strategy(id="chained-exception:legacy", interfaces=["exception"], score=2000)
+@produces_variants(["!system", "app"])
 def chained_exception_legacy(chained_exception, context, **meta):
     # Case 1: we have a single exception, use the single exception
     # component directly
     exceptions = chained_exception.exceptions()
     if len(exceptions) == 1:
-        return context.get_grouping_component(exceptions[0], **meta)
+        return {context["variant"]: context.get_grouping_component(exceptions[0], **meta)}
 
     # Case 2: try to build a new component out of the individual
     # errors however with a trick.  In case any exception has a
@@ -215,7 +215,7 @@ def chained_exception_legacy(chained_exception, context, **meta):
             if stacktrace_component is None or not stacktrace_component.contributes:
                 value.update(contributes=False, hint="exception has no stacktrace")
 
-    return GroupingComponent(id="chained-exception", values=values)
+    return {context["variant"]: GroupingComponent(id="chained-exception", values=values)}
 
 
 @chained_exception_legacy.variant_processor
@@ -224,7 +224,7 @@ def chained_exception_legacy_variant_processor(variants, context, **meta):
 
 
 @strategy(id="frame:legacy", interfaces=["frame"])
-def frame_legacy(frame, event, **meta):
+def frame_legacy(frame, event, context, **meta):
     platform = frame.platform or event.platform
 
     # In certain situations we want to disregard the entire frame.
@@ -255,7 +255,7 @@ def frame_legacy(frame, event, **meta):
             filename_component.update(
                 contributes=False, values=[frame.filename], hint="ignored because filename is a URL"
             )
-        # XXX(dcramer): dont compute hash using frames containing the 'Caused by'
+        # XXX(dcramer): don't compute hash using frames containing the 'Caused by'
         # text as it contains an exception value which may may contain dynamic
         # values (see raven-java#125)
         elif frame.filename.startswith("Caused by: "):
@@ -364,24 +364,25 @@ def frame_legacy(frame, event, **meta):
                 contributes=False, values=[frame.lineno], hint="line number " + fallback_hint
             )
 
-    return GroupingComponent(
-        id="frame",
-        values=[
-            module_component,
-            filename_component,
-            context_line_component,
-            symbol_component,
-            function_component,
-            lineno_component,
-        ],
-        contributes=contributes,
-        hint=hint,
-    )
+    return {
+        context["variant"]: GroupingComponent(
+            id="frame",
+            values=[
+                module_component,
+                filename_component,
+                context_line_component,
+                symbol_component,
+                function_component,
+                lineno_component,
+            ],
+            contributes=contributes,
+            hint=hint,
+        )
+    }
 
 
-@strategy(
-    id="stacktrace:legacy", interfaces=["stacktrace"], variants=["!system", "app"], score=1800
-)
+@strategy(id="stacktrace:legacy", interfaces=["stacktrace"], score=1800)
+@produces_variants(["!system", "app"])
 def stacktrace_legacy(stacktrace, context, **meta):
     variant = context["variant"]
     frames = stacktrace.frames
@@ -426,27 +427,36 @@ def stacktrace_legacy(stacktrace, context, **meta):
         frames_for_filtering.append(frame.get_raw_data())
         prev_frame = frame
 
-    rv = context.config.enhancements.assemble_stacktrace_component(
+    rv, _ = context.config.enhancements.assemble_stacktrace_component(
         values, frames_for_filtering, meta["event"].platform
     )
     rv.update(contributes=contributes, hint=hint)
-    return rv
+    return {variant: rv}
 
 
-@strategy(id="threads:legacy", interfaces=["threads"], variants=["!system", "app"], score=1900)
+@strategy(id="threads:legacy", interfaces=["threads"], score=1900)
+@produces_variants(["!system", "app"])
 def threads_legacy(threads_interface, context, **meta):
     thread_count = len(threads_interface.values)
     if thread_count != 1:
-        return GroupingComponent(
-            id="threads",
-            contributes=False,
-            hint="ignored because contains %d threads" % thread_count,
-        )
+        return {
+            context["variant"]: GroupingComponent(
+                id="threads",
+                contributes=False,
+                hint="ignored because contains %d threads" % thread_count,
+            )
+        }
 
     stacktrace = threads_interface.values[0].get("stacktrace")
     if not stacktrace:
-        return GroupingComponent(id="threads", contributes=False, hint="thread has no stacktrace")
+        return {
+            context["variant"]: GroupingComponent(
+                id="threads", contributes=False, hint="thread has no stacktrace"
+            )
+        }
 
-    return GroupingComponent(
-        id="threads", values=[context.get_grouping_component(stacktrace, **meta)]
-    )
+    return {
+        context["variant"]: GroupingComponent(
+            id="threads", values=[context.get_grouping_component(stacktrace, **meta)]
+        )
+    }

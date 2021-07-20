@@ -1,13 +1,13 @@
-from sentry.utils.compat import mock
 import copy
 
 from sentry.integrations.example.integration import ExampleIntegration
-from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.models import Activity, ExternalIssue, GroupLink, Integration
+from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.testutils import APITestCase
-from sentry.utils.http import absolute_uri
 from sentry.testutils.factories import DEFAULT_EVENT_DATA
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils.compat import mock
+from sentry.utils.http import absolute_uri
 
 
 class GroupIntegrationDetailsTest(APITestCase):
@@ -50,7 +50,7 @@ class GroupIntegrationDetailsTest(APITestCase):
                     "name": provider.name,
                     "canAdd": provider.can_add,
                     "canDisable": provider.can_disable,
-                    "features": sorted([f.value for f in provider.features]),
+                    "features": sorted(f.value for f in provider.features),
                     "aspects": provider.metadata.aspects,
                 },
                 "linkIssueConfig": [
@@ -90,7 +90,7 @@ class GroupIntegrationDetailsTest(APITestCase):
                     "name": provider.name,
                     "canAdd": provider.can_add,
                     "canDisable": provider.can_disable,
-                    "features": sorted([f.value for f in provider.features]),
+                    "features": sorted(f.value for f in provider.features),
                     "aspects": provider.metadata.aspects,
                 },
                 "createIssueConfig": [

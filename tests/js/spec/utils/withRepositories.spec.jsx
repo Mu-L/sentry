@@ -1,6 +1,4 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import RepositoryStore from 'app/stores/repositoryStore';
 import withRepositories from 'app/utils/withRepositories';
@@ -27,7 +25,7 @@ describe('withRepositories HoC', function () {
   it('adds repositories prop', async () => {
     const Component = () => null;
     const Container = withRepositories(Component);
-    const wrapper = mount(<Container api={api} organization={organization} />);
+    const wrapper = mountWithTheme(<Container api={api} organization={organization} />);
 
     await tick(); // Run Store.loadRepositories
     await tick(); // Run Store.loadRepositoriesSuccess
@@ -43,27 +41,22 @@ describe('withRepositories HoC', function () {
     const Component = () => null;
     const Container = withRepositories(Component);
 
-    // XXX(leedongwei): We cannot spy on `fetchRepositories` as Jest can't
-    // replace the method in the prototype due to createReactClass.
-    // As such, I'm using `componentDidMount` as a proxy.
     jest.spyOn(api, 'requestPromise');
-    jest.spyOn(Container.prototype, 'componentDidMount');
-    // jest.spyOn(Container.prototype, 'fetchRepositories');
+    jest.spyOn(Container.prototype, 'fetchRepositories');
 
     // Mount and run component
-    mount(<Container api={api} organization={organization} />);
+    mountWithTheme(<Container api={api} organization={organization} />);
     await tick();
     await tick();
 
     // Mount and run duplicates
-    mount(<Container api={api} organization={organization} />);
+    mountWithTheme(<Container api={api} organization={organization} />);
     await tick();
-    mount(<Container api={api} organization={organization} />);
+    mountWithTheme(<Container api={api} organization={organization} />);
     await tick();
 
     expect(api.requestPromise).toHaveBeenCalledTimes(1);
-    expect(Container.prototype.componentDidMount).toHaveBeenCalledTimes(3);
-    // expect(Container.prototype.fetchRepositories).toHaveBeenCalledTimes(3);
+    expect(Container.prototype.fetchRepositories).toHaveBeenCalledTimes(3);
   });
 
   /**
@@ -82,9 +75,9 @@ describe('withRepositories HoC', function () {
     jest.spyOn(Container.prototype, 'componentDidMount');
 
     // Mount and run duplicates
-    mount(<Container api={api} organization={organization} />);
-    mount(<Container api={api} organization={organization} />);
-    mount(<Container api={api} organization={organization} />);
+    mountWithTheme(<Container api={api} organization={organization} />);
+    mountWithTheme(<Container api={api} organization={organization} />);
+    mountWithTheme(<Container api={api} organization={organization} />);
 
     await tick();
     await tick();

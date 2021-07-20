@@ -1,24 +1,24 @@
 import logging
-from sentry.utils.compat import mock
-import pytest
 import uuid
-
 from datetime import datetime, timedelta
-from django.utils import timezone
 from time import time
+
+import pytest
+from django.utils import timezone
 
 from sentry import nodestore
 from sentry.app import tsdb
-from sentry.attachments import attachment_cache, CachedAttachment
-from sentry.constants import DataCategory, MAX_VERSION_LENGTH
-from sentry.eventstore.models import Event
+from sentry.attachments import CachedAttachment, attachment_cache
+from sentry.constants import MAX_VERSION_LENGTH, DataCategory
 from sentry.event_manager import (
-    HashDiscarded,
     EventManager,
     EventUser,
+    HashDiscarded,
     has_pending_commit_resolution,
 )
+from sentry.eventstore.models import Event
 from sentry.grouping.utils import hash_from_values
+from sentry.ingest.inbound_filters import FilterStatKeys
 from sentry.models import (
     Activity,
     Commit,
@@ -33,16 +33,16 @@ from sentry.models import (
     GroupStatus,
     GroupTombstone,
     Integration,
+    OrganizationIntegration,
     Release,
     ReleaseCommit,
     ReleaseProjectEnvironment,
-    OrganizationIntegration,
     UserReport,
 )
+from sentry.testutils import TestCase, assert_mock_called_once_with_partial
 from sentry.utils.cache import cache_key_for_event
+from sentry.utils.compat import mock
 from sentry.utils.outcomes import Outcome
-from sentry.testutils import assert_mock_called_once_with_partial, TestCase
-from sentry.ingest.inbound_filters import FilterStatKeys
 
 
 def make_event(**kwargs):
@@ -130,6 +130,89 @@ class EventManagerTest(TestCase):
         assert group.message == event2.message
         assert group.data.get("type") == "default"
         assert group.data.get("metadata") == {"title": "foo bar"}
+
+    def test_applies_secondary_grouping(self):
+        project = self.project
+        project.update_option("sentry:grouping_config", "legacy:2019-03-12")
+        project.update_option("sentry:secondary_grouping_expiry", 0)
+
+        timestamp = time() - 300
+        manager = EventManager(
+            make_event(message="foo 123", event_id="a" * 32, timestamp=timestamp)
+        )
+        manager.normalize()
+        event = manager.save(project.id)
+
+        project.update_option("sentry:grouping_config", "newstyle:2019-10-29")
+        project.update_option("sentry:secondary_grouping_config", "legacy:2019-03-12")
+        project.update_option("sentry:secondary_grouping_expiry", time() + (24 * 90 * 3600))
+
+        # Switching to newstyle grouping changes hashes as 123 will be removed
+
+        manager = EventManager(
+            make_event(message="foo 123", event_id="b" * 32, timestamp=timestamp + 2.0)
+        )
+        manager.normalize()
+
+        with self.tasks():
+            event2 = manager.save(project.id)
+
+        # make sure that events did get into same group because of fallback grouping, not because of hashes which come from primary grouping only
+        assert not set(event.get_hashes().hashes) & set(event2.get_hashes().hashes)
+        assert event.group_id == event2.group_id
+
+        group = Group.objects.get(id=event.group_id)
+
+        assert group.times_seen == 2
+        assert group.last_seen == event2.datetime
+        assert group.message == event2.message
+        assert group.data.get("type") == "default"
+        assert group.data.get("metadata") == {"title": "foo 123"}
+
+    @mock.patch("sentry.event_manager._calculate_background_grouping")
+    def test_applies_background_grouping(self, mock_calc_grouping):
+        timestamp = time() - 300
+        manager = EventManager(
+            make_event(message="foo 123", event_id="a" * 32, timestamp=timestamp)
+        )
+        manager.normalize()
+        manager.save(self.project.id)
+
+        assert mock_calc_grouping.call_count == 0
+
+        with self.options(
+            {
+                "store.background-grouping-config-id": "mobile:2021-02-12",
+                "store.background-grouping-sample-rate": 1.0,
+            }
+        ):
+            manager.save(self.project.id)
+
+        assert mock_calc_grouping.call_count == 1
+
+    @mock.patch("sentry.event_manager._calculate_background_grouping")
+    def test_background_grouping_sample_rate(self, mock_calc_grouping):
+
+        timestamp = time() - 300
+        manager = EventManager(
+            make_event(message="foo 123", event_id="a" * 32, timestamp=timestamp)
+        )
+        manager.normalize()
+        manager.save(self.project.id)
+
+        assert mock_calc_grouping.call_count == 0
+
+        with self.options(
+            {
+                "store.background-grouping-config-id": "mobile:2021-02-12",
+                "store.background-grouping-sample-rate": 0.0,
+            }
+        ):
+            manager.save(self.project.id)
+
+        manager.save(self.project.id)
+
+        assert mock_calc_grouping.call_count == 0
 
     def test_updates_group_with_fingerprint(self):
         ts = time() - 200
@@ -1410,6 +1493,159 @@ class EventManagerTest(TestCase):
             ]
             == 1
         )
+
+    def test_category_match_in_app(self):
+        """
+        Regression test to ensure that grouping in-app enhancements work in
+        principle.
+        """
+        from sentry.grouping.enhancer import Enhancements
+
+        enhancement = Enhancements.from_config_string(
+            """
+            function:foo category=bar
+            function:foo2 category=bar
+            category:bar -app
+            """,
+        )
+
+        event = make_event(
+            platform="native",
+            exception={
+                "values": [
+                    {
+                        "type": "Hello",
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "function": "foo",
+                                    "in_app": True,
+                                },
+                                {"function": "bar"},
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+        manager = EventManager(event)
+        manager.normalize()
+        manager.get_data()["grouping_config"] = {
+            "enhancements": enhancement.dumps(),
+            "id": "mobile:2021-02-12",
+        }
+        event1 = manager.save(1)
+        assert event1.data["exception"]["values"][0]["stacktrace"]["frames"][0]["in_app"] is False
+
+        event = make_event(
+            platform="native",
+            exception={
+                "values": [
+                    {
+                        "type": "Hello",
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "function": "foo2",
+                                    "in_app": True,
+                                },
+                                {"function": "bar"},
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+        manager = EventManager(event)
+        manager.normalize()
+        manager.get_data()["grouping_config"] = {
+            "enhancements": enhancement.dumps(),
+            "id": "mobile:2021-02-12",
+        }
+        event2 = manager.save(1)
+        assert event2.data["exception"]["values"][0]["stacktrace"]["frames"][0]["in_app"] is False
+        assert event1.group_id == event2.group_id
+
+    def test_category_match_group(self):
+        """
+        Regression test to ensure categories are applied consistently and don't
+        produce hash mismatches.
+        """
+        from sentry.grouping.enhancer import Enhancements
+
+        enhancement = Enhancements.from_config_string(
+            """
+            function:foo category=foo_like
+            category:foo_like -group
+            """,
+        )
+
+        event = make_event(
+            platform="native",
+            exception={
+                "values": [
+                    {
+                        "type": "Hello",
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "function": "foo",
+                                },
+                                {
+                                    "function": "bar",
+                                },
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+        manager = EventManager(event)
+        manager.normalize()
+
+        grouping_config = {
+            "enhancements": enhancement.dumps(),
+            "id": "mobile:2021-02-12",
+        }
+
+        manager.get_data()["grouping_config"] = grouping_config
+        event1 = manager.save(1)
+
+        event2 = Event(event1.project_id, event1.event_id, data=event1.data)
+
+        assert event1.get_hashes().hashes == event2.get_hashes(grouping_config).hashes
+
+    def test_synthetic_exception_detection(self):
+        manager = EventManager(
+            make_event(
+                message="foo",
+                event_id="b" * 32,
+                exception={
+                    "values": [
+                        {
+                            "type": "SIGABRT",
+                            "mechanism": {"handled": False},
+                            "stacktrace": {"frames": [{"function": "foo"}]},
+                        }
+                    ]
+                },
+            ),
+            project=self.project,
+        )
+        manager.normalize()
+
+        manager.get_data()["grouping_config"] = {
+            "id": "mobile:2021-02-12",
+        }
+        event = manager.save(1)
+
+        mechanism = event.interfaces["exception"].values[0].mechanism
+        assert mechanism is not None
+        assert mechanism.synthetic is True
+        assert event.title == "foo"
 
 
 class ReleaseIssueTest(TestCase):

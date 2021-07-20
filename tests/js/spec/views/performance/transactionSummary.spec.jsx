@@ -1,4 +1,3 @@
-import React from 'react';
 import {browserHistory} from 'react-router';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
@@ -9,9 +8,10 @@ import TransactionSummary from 'app/views/performance/transactionSummary';
 
 function initializeData({features: additionalFeatures = [], query = {}} = {}) {
   const features = ['discover-basic', 'performance-view', ...additionalFeatures];
+  const project = TestStubs.Project();
   const organization = TestStubs.Organization({
     features,
-    projects: [TestStubs.Project()],
+    projects: [project],
     apdexThreshold: 400,
   });
   const initialData = initializeOrg({
@@ -20,7 +20,7 @@ function initializeData({features: additionalFeatures = [], query = {}} = {}) {
       location: {
         query: {
           transaction: '/performance',
-          project: 1,
+          project: 2,
           transactionCursor: '1:0:0',
           ...query,
         },
@@ -33,6 +33,7 @@ function initializeData({features: additionalFeatures = [], query = {}} = {}) {
 
 describe('Performance > TransactionSummary', function () {
   beforeEach(function () {
+    MockApiClient.clearMockResponses();
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/projects/',
       body: [],
@@ -54,8 +55,7 @@ describe('Performance > TransactionSummary', function () {
       body: [],
     });
     MockApiClient.addMockResponse({
-      url:
-        '/organizations/org-slug/issues/?limit=5&project=1&query=is%3Aunresolved%20transaction%3A%2Fperformance&sort=new&statsPeriod=14d',
+      url: '/organizations/org-slug/issues/?limit=5&project=2&query=is%3Aunresolved%20transaction%3A%2Fperformance&sort=new&statsPeriod=14d',
       body: [],
     });
     MockApiClient.addMockResponse({
@@ -91,18 +91,24 @@ describe('Performance > TransactionSummary', function () {
         body: {
           meta: {
             count: 'number',
-            apdex_300: 'number',
-            user_misery_300: 'number',
+            apdex_400: 'number',
+            count_miserable_user_400: 'number',
+            user_misery_400: 'number',
             count_unique_user: 'number',
             p95: 'number',
+            failure_rate: 'number',
+            tpm: 'number',
           },
           data: [
             {
               count: 2,
-              apdex_300: 0.6,
-              user_misery_300: 122,
+              apdex_400: 0.6,
+              count_miserable_user_400: 122,
+              user_misery_400: 0.114,
               count_unique_user: 1,
               p95: 750.123,
+              failure_rate: 1,
+              tpm: 1,
             },
           ],
         },
@@ -135,7 +141,7 @@ describe('Performance > TransactionSummary', function () {
               id: 'deadbeef',
               'user.display': 'uhoh@example.com',
               'transaction.duration': 400,
-              'project.id': 1,
+              'project.id': 2,
               timestamp: '2020-05-21T15:31:18+00:00',
             },
           ],
@@ -188,11 +194,45 @@ describe('Performance > TransactionSummary', function () {
         },
       ],
     });
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/events-vitals/',
+      body: {
+        'measurements.fcp': {
+          poor: 3,
+          meh: 100,
+          good: 47,
+          total: 150,
+          p75: 1500,
+        },
+        'measurements.lcp': {
+          poor: 2,
+          meh: 38,
+          good: 40,
+          total: 80,
+          p75: 2750,
+        },
+        'measurements.fid': {
+          poor: 2,
+          meh: 53,
+          good: 5,
+          total: 60,
+          p75: 1000,
+        },
+        'measurements.cls': {
+          poor: 3,
+          meh: 10,
+          good: 4,
+          total: 17,
+          p75: 0.2,
+        },
+      },
+    });
   });
 
   afterEach(function () {
     MockApiClient.clearMockResponses();
     ProjectsStore.reset();
+    jest.clearAllMocks();
   });
 
   it('renders basic UI elements', async function () {
@@ -228,6 +268,9 @@ describe('Performance > TransactionSummary', function () {
 
     // Ensure create alert from discover is hidden without metric alert
     expect(wrapper.find('CreateAlertFromViewButton')).toHaveLength(0);
+
+    // Ensure status breakdown exists
+    expect(wrapper.find('StatusBreakdown')).toHaveLength(1);
   });
 
   it('renders feature flagged UI elements', async function () {
@@ -247,6 +290,78 @@ describe('Performance > TransactionSummary', function () {
     expect(wrapper.find('CreateAlertFromViewButton')).toHaveLength(1);
   });
 
+  it('fetches transaction threshdold', async function () {
+    const initialData = initializeData({
+      features: ['project-transaction-threshold-override'],
+    });
+    const getTransactionThresholdMock = MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/project-transaction-threshold-override/',
+      method: 'GET',
+      body: {
+        threshold: '800',
+        metric: 'lcp',
+      },
+    });
+
+    const getProjectThresholdMock = MockApiClient.addMockResponse({
+      url: '/projects/org-slug/project-slug/transaction-threshold/configure/',
+      method: 'GET',
+      body: {
+        threshold: '200',
+        metric: 'duration',
+      },
+    });
+
+    const wrapper = mountWithTheme(
+      <TransactionSummary
+        organization={initialData.organization}
+        location={initialData.router.location}
+      />,
+      initialData.routerContext
+    );
+    await tick();
+    wrapper.update();
+
+    expect(getTransactionThresholdMock).toHaveBeenCalledTimes(1);
+    expect(getProjectThresholdMock).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('fetches project transaction threshdold', async function () {
+    const initialData = initializeData({
+      features: ['project-transaction-threshold-override'],
+    });
+    const getTransactionThresholdMock = MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/project-transaction-threshold-override/',
+      method: 'GET',
+      statusCode: 404,
+    });
+
+    const getProjectThresholdMock = MockApiClient.addMockResponse({
+      url: '/projects/org-slug/project-slug/transaction-threshold/configure/',
+      method: 'GET',
+      body: {
+        threshold: '200',
+        metric: 'duration',
+      },
+    });
+
+    const wrapper = mountWithTheme(
+      <TransactionSummary
+        organization={initialData.organization}
+        location={initialData.router.location}
+      />,
+      initialData.routerContext
+    );
+    await tick();
+    wrapper.update();
+
+    expect(getTransactionThresholdMock).toHaveBeenCalledTimes(1);
+    expect(getProjectThresholdMock).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
+
   it('triggers a navigation on search', async function () {
     const initialData = initializeData();
     const wrapper = mountWithTheme(
@@ -260,7 +375,7 @@ describe('Performance > TransactionSummary', function () {
     wrapper.update();
 
     // Fill out the search box, and submit it.
-    const searchBar = wrapper.find('SearchBar input');
+    const searchBar = wrapper.find('SearchBar textarea');
     searchBar
       .simulate('change', {target: {value: 'user.email:uhoh*'}})
       .simulate('submit', {preventDefault() {}});
@@ -270,7 +385,7 @@ describe('Performance > TransactionSummary', function () {
       pathname: undefined,
       query: {
         transaction: '/performance',
-        project: 1,
+        project: 2,
         statsPeriod: '14d',
         query: 'user.email:uhoh*',
         transactionCursor: '1:0:0',
@@ -329,7 +444,7 @@ describe('Performance > TransactionSummary', function () {
       pathname: undefined,
       query: {
         transaction: '/performance',
-        project: 1,
+        project: 2,
         showTransactions: 'slow',
         transactionCursor: undefined,
       },
@@ -359,7 +474,7 @@ describe('Performance > TransactionSummary', function () {
       pathname: undefined,
       query: {
         transaction: '/performance',
-        project: 1,
+        project: 2,
         transactionCursor: '2:0:0',
       },
     });
@@ -367,8 +482,7 @@ describe('Performance > TransactionSummary', function () {
 
   it('forwards conditions to related issues', async function () {
     const issueGet = MockApiClient.addMockResponse({
-      url:
-        '/organizations/org-slug/issues/?limit=5&project=1&query=tag%3Avalue%20is%3Aunresolved%20transaction%3A%2Fperformance&sort=new&statsPeriod=14d',
+      url: '/organizations/org-slug/issues/?limit=5&project=2&query=tag%3Avalue%20is%3Aunresolved%20transaction%3A%2Fperformance&sort=new&statsPeriod=14d',
       body: [],
     });
 
@@ -389,8 +503,7 @@ describe('Performance > TransactionSummary', function () {
   it('does not forward event type to related issues', async function () {
     const issueGet = MockApiClient.addMockResponse(
       {
-        url:
-          '/organizations/org-slug/issues/?limit=5&project=1&query=tag%3Avalue%20is%3Aunresolved%20transaction%3A%2Fperformance&sort=new&statsPeriod=14d',
+        url: '/organizations/org-slug/issues/?limit=5&project=2&query=tag%3Avalue%20is%3Aunresolved%20transaction%3A%2Fperformance&sort=new&statsPeriod=14d',
         body: [],
       },
       {
@@ -415,5 +528,31 @@ describe('Performance > TransactionSummary', function () {
     wrapper.update();
 
     expect(issueGet).toHaveBeenCalled();
+  });
+
+  it('adds search condition on transaction status when clicking on status breakdown', async function () {
+    const initialData = initializeData();
+    const wrapper = mountWithTheme(
+      <TransactionSummary
+        organization={initialData.organization}
+        location={initialData.router.location}
+      />,
+      initialData.routerContext
+    );
+    await tick();
+    wrapper.update();
+
+    wrapper.find('BarContainer[data-test-id="status-ok"]').at(0).simulate('click');
+    await tick();
+    wrapper.update();
+
+    expect(browserHistory.push).toHaveBeenCalledTimes(1);
+    expect(browserHistory.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({
+          query: expect.stringContaining('transaction.status:ok'),
+        }),
+      })
+    );
   });
 });

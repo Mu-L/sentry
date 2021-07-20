@@ -1,9 +1,9 @@
 from rest_framework.response import Response
 
-from sentry.api.bases import OrganizationEndpoint
-from sentry.api.serializers.rest_framework import DashboardWidgetSerializer
-from sentry.api.endpoints.organization_dashboards import OrganizationDashboardsPermission
 from sentry import features
+from sentry.api.bases import OrganizationEndpoint
+from sentry.api.endpoints.organization_dashboards import OrganizationDashboardsPermission
+from sentry.api.serializers.rest_framework import DashboardWidgetSerializer
 
 
 class OrganizationDashboardWidgetDetailsEndpoint(OrganizationEndpoint):
@@ -22,7 +22,11 @@ class OrganizationDashboardWidgetDetailsEndpoint(OrganizationEndpoint):
             return Response(status=404)
 
         serializer = DashboardWidgetSerializer(
-            data=request.data, context={"organization": organization}
+            data=request.data,
+            context={
+                "organization": organization,
+                "projects": self.get_projects(request, organization),
+            },
         )
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)

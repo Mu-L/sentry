@@ -1,20 +1,17 @@
 import logging
 
 import sentry_sdk
-
 from rest_framework.response import Response
 
 from sentry.api.bases import SentryAppAuthorizationsBaseEndpoint
-from sentry.coreapi import APIUnauthorized
-from sentry.mediators.token_exchange import GrantExchanger, Refresher, GrantTypes
 from sentry.api.serializers.models.apitoken import ApiTokenSerializer
-from sentry.web.decorators import transaction_start
+from sentry.coreapi import APIUnauthorized
+from sentry.mediators.token_exchange import GrantExchanger, GrantTypes, Refresher
 
 logger = logging.getLogger(__name__)
 
 
 class SentryAppAuthorizationsEndpoint(SentryAppAuthorizationsBaseEndpoint):
-    @transaction_start("SentryAppAuthorizationsEndpoint")
     def post(self, request, installation):
         with sentry_sdk.configure_scope() as scope:
             scope.set_tag("organization", installation.organization_id)
@@ -39,7 +36,7 @@ class SentryAppAuthorizationsEndpoint(SentryAppAuthorizationsBaseEndpoint):
                 else:
                     return Response({"error": "Invalid grant_type"}, status=403)
             except APIUnauthorized as e:
-                logger.error(e, exc_info=True)
+                logger.warning(e, exc_info=True)
                 return Response({"error": e.msg or "Unauthorized"}, status=403)
 
             attrs = {"state": request.json_body.get("state"), "application": None}

@@ -1,8 +1,8 @@
-from sentry.utils.compat import mock
 from selenium.common.exceptions import TimeoutException
 
 from sentry.models import Project
 from sentry.testutils import AcceptanceTestCase
+from sentry.utils.compat import mock
 from sentry.utils.retries import TimedRetryPolicy
 
 
@@ -51,5 +51,5 @@ class OrganizationOnboardingTest(AcceptanceTestCase):
         assert project.platform == "node"
 
         self.browser.click('[data-test-id="onboarding-getting-started-invite-members"]')
-        self.browser.wait_until(".modal-dialog")
+        self.browser.wait_until("[role='dialog']")
         self.browser.snapshot(name="onboarding - invite members")

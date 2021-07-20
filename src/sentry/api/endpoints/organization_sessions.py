@@ -1,16 +1,17 @@
 from contextlib import contextmanager
 
-from rest_framework.response import Response
-from rest_framework.exceptions import ParseError
-
 import sentry_sdk
+from rest_framework.exceptions import ParseError
+from rest_framework.response import Response
 
-from sentry.api.bases import OrganizationEventsEndpointBase, NoProjects
+from sentry import features
+from sentry.api.bases import NoProjects, OrganizationEventsEndpointBase
 from sentry.snuba.sessions_v2 import (
     InvalidField,
+    InvalidParams,
     QueryDefinition,
-    run_sessions_query,
     massage_sessions_result,
+    run_sessions_query,
 )
 
 
@@ -31,13 +32,15 @@ class OrganizationSessionsEndpoint(OrganizationEventsEndpointBase):
             return Response(result, status=200)
 
     def build_sessions_query(self, request, organization):
-        # validate and default all `project` params.
-        projects = self.get_projects(request, organization)
-        if projects is None or len(projects) == 0:
-            raise NoProjects("No projects available")
-        project_ids = [p.id for p in projects]
+        try:
+            params = self.get_filter_params(request, organization, date_filter_optional=True)
+        except NoProjects:
+            raise NoProjects("No projects available")  # give it a description
 
-        return QueryDefinition(request.GET, project_ids)
+        allow_minute_resolution = features.has(
+            "organizations:minute-resolution-sessions", organization, actor=request.user
+        )
+        return QueryDefinition(request.GET, params, allow_minute_resolution=allow_minute_resolution)
 
     @contextmanager
     def handle_query_errors(self):
@@ -45,5 +48,5 @@ class OrganizationSessionsEndpoint(OrganizationEventsEndpointBase):
             # TODO: this context manager should be decoupled from `OrganizationEventsEndpointBase`?
             with super().handle_query_errors():
                 yield
-        except (InvalidField, NoProjects) as error:
+        except (InvalidField, InvalidParams, NoProjects) as error:
             raise ParseError(detail=str(error))

@@ -1,4 +1,3 @@
-import React from 'react';
 import {browserHistory} from 'react-router';
 import * as Sentry from '@sentry/react';
 
@@ -125,7 +124,7 @@ describe('CreateSampleEventButton', function () {
         eventName: 'Sample Event Created',
         organization_id: org.id,
         project_id: project.id,
-        interval: 800,
+        interval: 1000,
         retries: 1,
         source: 'test',
         platform: 'javascript',

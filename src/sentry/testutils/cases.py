@@ -20,75 +20,74 @@ __all__ = (
     "OrganizationDashboardWidgetTestCase",
 )
 
+import inspect
 import os
 import os.path
+import time
+from contextlib import contextmanager
+from datetime import datetime
+from urllib.parse import urlencode
+from uuid import uuid4
+
 import pytest
 import requests
-import time
-import inspect
-from uuid import uuid4
-from contextlib import contextmanager
-from sentry.utils.compat import mock
-
 from click.testing import CliRunner
-from datetime import datetime
 from django.conf import settings
 from django.contrib.auth import login
 from django.contrib.auth.models import AnonymousUser
 from django.core import signing
 from django.core.cache import cache
-from django.core.urlresolvers import reverse
-from django.db import connections, DEFAULT_DB_ALIAS
+from django.db import DEFAULT_DB_ALIAS, connections
 from django.http import HttpRequest
-from django.test import override_settings, TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.functional import cached_property
-
-from exam import before, fixture, Exam
-from sentry.utils.compat.mock import patch
+from exam import Exam, before, fixture
 from pkg_resources import iter_entry_points
 from rest_framework.test import APITestCase as BaseAPITestCase
-from urllib.parse import urlencode
 
-from sentry import auth
-from sentry import eventstore
+from sentry import auth, eventstore
 from sentry.auth.authenticators import TotpInterface
 from sentry.auth.providers.dummy import DummyProvider
-from sentry.auth.superuser import (
-    Superuser,
-    COOKIE_SALT as SU_COOKIE_SALT,
-    COOKIE_NAME as SU_COOKIE_NAME,
-    ORG_ID as SU_ORG_ID,
-    COOKIE_SECURE as SU_COOKIE_SECURE,
-    COOKIE_DOMAIN as SU_COOKIE_DOMAIN,
-    COOKIE_PATH as SU_COOKIE_PATH,
-)
+from sentry.auth.superuser import COOKIE_DOMAIN as SU_COOKIE_DOMAIN
+from sentry.auth.superuser import COOKIE_NAME as SU_COOKIE_NAME
+from sentry.auth.superuser import COOKIE_PATH as SU_COOKIE_PATH
+from sentry.auth.superuser import COOKIE_SALT as SU_COOKIE_SALT
+from sentry.auth.superuser import COOKIE_SECURE as SU_COOKIE_SECURE
+from sentry.auth.superuser import ORG_ID as SU_ORG_ID
+from sentry.auth.superuser import Superuser
 from sentry.constants import MODULE_ROOT
 from sentry.eventstream.snuba import SnubaEventStream
 from sentry.models import (
-    GroupMeta,
-    ProjectOption,
-    Repository,
-    DeletedOrganization,
-    Organization,
     Dashboard,
-    DashboardWidgetQuery,
     DashboardWidget,
     DashboardWidgetDisplayTypes,
+    DashboardWidgetQuery,
+    DeletedOrganization,
+    GroupMeta,
+    Organization,
+    ProjectOption,
+    Repository,
 )
 from sentry.plugins.base import plugins
 from sentry.rules import EventState
 from sentry.tagstore.snuba import SnubaTagStorage
+from sentry.testutils.helpers.datetime import iso_format
 from sentry.utils import json
 from sentry.utils.auth import SSO_SESSION_KEY
-from sentry.testutils.helpers.datetime import iso_format
+from sentry.utils.compat import mock
+from sentry.utils.compat.mock import patch
+from sentry.utils.pytest.selenium import Browser
 from sentry.utils.retries import TimedRetryPolicy
+from sentry.utils.snuba import _snuba_pool
 
-from .fixtures import Fixtures
+from . import assert_status_code
 from .factories import Factories
-from .skips import requires_snuba
+from .fixtures import Fixtures
 from .helpers import AuthProvider, Feature, TaskRunner, override_options, parse_queries
+from .skips import requires_snuba
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36"
 
@@ -274,6 +273,13 @@ class BaseTestCase(Fixtures, Exam):
         with context:
             func(*args, **kwargs)
 
+    def get_mock_uuid(self):
+        class uuid:
+            hex = "abc123"
+            bytes = b"\x00\x01\x02"
+
+        return uuid
+
 
 class _AssertQueriesContext(CaptureQueriesContext):
     def __init__(self, test_case, queries, debug, connection):
@@ -331,10 +337,27 @@ class TransactionTestCase(BaseTestCase, TransactionTestCase):
 
 
 class APITestCase(BaseTestCase, BaseAPITestCase):
+    """
+    Extend APITestCase to inherit access to `client`, an object with methods
+    that simulate API calls to Sentry, and the helper `get_response`, which
+    combines and simplify a lot of tedious parts of making API calls in tests.
+    When creating API tests, use a new class per endpoint-method pair. The class
+    must set the string `endpoint`.
+    """
+
     endpoint = None
     method = "get"
 
     def get_response(self, *args, **params):
+        """
+        Simulate an API call to the test case's URI and method.
+
+        :param params:
+            * qs_params: (Optional) Dict mapping keys to values that will be
+             url-encoded into a API call's query string. Note: The name is
+             intentionally a little funny to prevent name collisions.
+        :returns Response object
+        """
         if self.endpoint is None:
             raise Exception("Implement self.endpoint to use this method.")
 
@@ -350,10 +373,58 @@ class APITestCase(BaseTestCase, BaseAPITestCase):
         return getattr(self.client, method)(url, format="json", data=params)
 
     def get_valid_response(self, *args, **params):
+        """Deprecated. Calls `get_response` (see above) and asserts a specific status code."""
         status_code = params.pop("status_code", 200)
         resp = self.get_response(*args, **params)
         assert resp.status_code == status_code, (resp.status_code, resp.content)
         return resp
+
+    def get_success_response(self, *args, **params):
+        """
+        Call `get_response` (see above) and assert the response's status code.
+
+        :param params:
+            * status_code: (Optional) Assert that the response's status code is
+            a specific code. Omit to assert any successful status_code.
+        :returns Response object
+        """
+        status_code = params.pop("status_code", None)
+
+        if status_code and status_code >= 400:
+            raise Exception("status_code must be < 400")
+
+        response = self.get_response(*args, **params)
+
+        if status_code:
+            assert_status_code(response, status_code)
+        else:
+            assert_status_code(response, 200, 300)
+
+        return response
+
+    def get_error_response(self, *args, **params):
+        """
+        Call `get_response` (see above) and assert that the response's status
+        code is an error code. Basically it's syntactic sugar.
+
+        :param params:
+            * status_code: (Optional) Assert that the response's status code is
+            a specific error code. Omit to assert any error status_code.
+        :returns Response object
+        """
+        status_code = params.pop("status_code", None)
+
+        if status_code and status_code < 400:
+            raise Exception("status_code must be >= 400 (an error status code)")
+
+        response = self.get_response(*args, **params)
+
+        if status_code:
+            assert_status_code(response, status_code)
+        else:
+            assert_status_code(response, 400, 600)
+
+        return response
 
 
 class TwoFactorAPITestCase(APITestCase):
@@ -391,7 +462,7 @@ class TwoFactorAPITestCase(APITestCase):
             assert err_msg.encode("utf-8") in response.content
         organization = Organization.objects.get(id=organization.id)
 
-        if status_code >= 200 and status_code < 300:
+        if 200 <= status_code < 300:
             assert organization.flags.require_2fa
         else:
             assert not organization.flags.require_2fa
@@ -580,13 +651,15 @@ class CliTestCase(TestCase):
 
     default_args = []
 
-    def invoke(self, *args):
+    def invoke(self, *args, **kwargs):
         args += tuple(self.default_args)
-        return self.runner.invoke(self.command, args, obj={})
+        return self.runner.invoke(self.command, args, obj={}, **kwargs)
 
 
 @pytest.mark.usefixtures("browser")
 class AcceptanceTestCase(TransactionTestCase):
+    browser: Browser
+
     def setUp(self):
         patcher = patch(
             "django.utils.timezone.now",
@@ -650,7 +723,7 @@ class IntegrationTestCase(TestCase):
         self.save_session()
 
     def assertDialogSuccess(self, resp):
-        assert b"window.opener.postMessage(" in resp.content
+        assert b'window.opener.postMessage({"success":true' in resp.content
 
 
 @pytest.mark.snuba
@@ -669,6 +742,20 @@ class SnubaTestCase(BaseTestCase):
     @pytest.fixture(autouse=True)
     def initialize(self, reset_snuba, call_snuba):
         self.call_snuba = call_snuba
+
+    @contextmanager
+    def disable_snuba_query_cache(self):
+        self.snuba_update_config({"use_readthrough_query_cache": 0, "use_cache": 0})
+        yield
+        self.snuba_update_config({"use_readthrough_query_cache": None, "use_cache": None})
+
+    @classmethod
+    def snuba_get_config(cls):
+        return _snuba_pool.request("GET", "/config.json").data
+
+    @classmethod
+    def snuba_update_config(cls, config_vals):
+        return _snuba_pool.request("POST", "/config.json", body=json.dumps(config_vals))
 
     def init_snuba(self):
         self.snuba_eventstream = SnubaEventStream()
@@ -693,28 +780,45 @@ class SnubaTestCase(BaseTestCase):
         # While snuba is synchronous, clickhouse isn't entirely synchronous.
         attempt = 0
         snuba_filter = eventstore.Filter(project_ids=[project_id])
+        last_events_seen = 0
+
         while attempt < attempts:
             events = eventstore.get_events(snuba_filter)
+            last_events_seen = len(events)
             if len(events) >= total:
                 break
             attempt += 1
             time.sleep(0.05)
         if attempt == attempts:
-            assert False, f"Could not ensure event was persisted within {attempt} attempt(s)"
+            assert (
+                False
+            ), f"Could not ensure that {total} event(s) were persisted within {attempt} attempt(s). Event count is instead currently {last_events_seen}."
 
-    def store_session(self, session):
+    def bulk_store_sessions(self, sessions):
         assert (
             requests.post(
-                settings.SENTRY_SNUBA + "/tests/sessions/insert", data=json.dumps([session])
+                settings.SENTRY_SNUBA + "/tests/sessions/insert", data=json.dumps(sessions)
             ).status_code
             == 200
         )
+
+    def store_session(self, session):
+        self.bulk_store_sessions([session])
 
     def store_group(self, group):
         data = [self.__wrap_group(group)]
         assert (
             requests.post(
                 settings.SENTRY_SNUBA + "/tests/groupedmessage/insert", data=json.dumps(data)
+            ).status_code
+            == 200
+        )
+
+    def store_outcome(self, group):
+        data = [self.__wrap_group(group)]
+        assert (
+            requests.post(
+                settings.SENTRY_SNUBA + "/tests/outcomes/insert", data=json.dumps(data)
             ).status_code
             == 200
         )
@@ -819,20 +923,12 @@ class OutcomesSnubaTest(TestCase):
         super().setUp()
         assert requests.post(settings.SENTRY_SNUBA + "/tests/outcomes/drop").status_code == 200
 
-    def __format(self, org_id, project_id, outcome, timestamp, key_id):
-        return {
-            "project_id": project_id,
-            "timestamp": timestamp.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-            "org_id": org_id,
-            "reason": None,
-            "key_id": key_id,
-            "outcome": outcome,
-        }
-
-    def store_outcomes(self, org_id, project_id, outcome, timestamp, key_id, num_times):
+    def store_outcomes(self, outcome, num_times=1):
         outcomes = []
         for _ in range(num_times):
-            outcomes.append(self.__format(org_id, project_id, outcome, timestamp, key_id))
+            outcome_copy = outcome.copy()
+            outcome_copy["timestamp"] = outcome_copy["timestamp"].strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            outcomes.append(outcome_copy)
 
         assert (
             requests.post(
@@ -969,15 +1065,9 @@ class OrganizationDashboardWidgetTestCase(APITestCase):
             "conditions": "has:geo.country_code",
         }
 
-    def do_request(self, method, url, data=None, features=None):
-        if features is None:
-            features = {
-                "organizations:dashboards-basic": True,
-                "organizations:dashboards-edit": True,
-            }
+    def do_request(self, method, url, data=None):
         func = getattr(self.client, method)
-        with self.feature(features):
-            return func(url, data=data)
+        return func(url, data=data)
 
     def assert_widget_queries(self, widget_id, data):
         result_queries = DashboardWidgetQuery.objects.filter(widget_id=widget_id).order_by("order")

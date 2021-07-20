@@ -1,4 +1,3 @@
-import React from 'react';
 import {browserHistory} from 'react-router';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
@@ -67,6 +66,11 @@ describe('groupEventDetails', () => {
     MockApiClient.addMockResponse({
       url: '/prompts-activity/',
       body: promptsActivity,
+    });
+
+    MockApiClient.addMockResponse({
+      url: `/organizations/${org.slug}/has-mobile-app-events/`,
+      body: null,
     });
 
     MockApiClient.addMockResponse({

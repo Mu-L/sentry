@@ -1,20 +1,20 @@
-from sentry.utils.compat.mock import patch
 from hashlib import sha1
 
-from django.core.urlresolvers import reverse
 from django.core.files.base import ContentFile
+from django.urls import reverse
 
-from sentry.models import ApiToken, FileBlob, File, FileBlobIndex, FileBlobOwner
+from sentry.models import ApiToken, File, FileBlob, FileBlobIndex, FileBlobOwner
 from sentry.models.debugfile import ProjectDebugFile
-from sentry.testutils import APITestCase
 from sentry.tasks.assemble import (
+    AssembleTask,
+    ChunkFileState,
     assemble_dif,
     assemble_file,
     get_assemble_status,
     set_assemble_status,
-    AssembleTask,
-    ChunkFileState,
 )
+from sentry.testutils import APITestCase
+from sentry.utils.compat.mock import patch
 
 
 class DifAssembleEndpoint(APITestCase):
@@ -83,7 +83,7 @@ class DifAssembleEndpoint(APITestCase):
         # Now we add ownership to the blob
         blobs = FileBlob.objects.all()
         for blob in blobs:
-            FileBlobOwner.objects.create(blob=blob, organization=self.organization)
+            FileBlobOwner.objects.create(blob=blob, organization_id=self.organization.id)
 
         # The request will start the job to assemble the file
         response = self.client.post(
@@ -102,7 +102,7 @@ class DifAssembleEndpoint(APITestCase):
             checksum=file1.checksum,
             object_name="baz.dSYM",
             cpu_name="x86_64",
-            project=self.project,
+            project_id=self.project.id,
             debug_id="df449af8-0dcd-4320-9943-ec192134d593",
             code_id="DF449AF80DCD43209943EC192134D593",
         )
@@ -149,9 +149,9 @@ class DifAssembleEndpoint(APITestCase):
 
         # The order here is on purpose because we check for the order of checksums
         blob1 = FileBlob.from_file(fileobj1)
-        FileBlobOwner.objects.get_or_create(organization=self.organization, blob=blob1)
+        FileBlobOwner.objects.get_or_create(organization_id=self.organization.id, blob=blob1)
         blob3 = FileBlob.from_file(fileobj3)
-        FileBlobOwner.objects.get_or_create(organization=self.organization, blob=blob3)
+        FileBlobOwner.objects.get_or_create(organization_id=self.organization.id, blob=blob3)
         blob2 = FileBlob.from_file(fileobj2)
 
         # we make a request now but we are missing ownership for chunk 2
@@ -165,7 +165,7 @@ class DifAssembleEndpoint(APITestCase):
         assert response.data[total_checksum]["missingChunks"] == [checksum2]
 
         # we add ownership to chunk 2
-        FileBlobOwner.objects.get_or_create(organization=self.organization, blob=blob2)
+        FileBlobOwner.objects.get_or_create(organization_id=self.organization.id, blob=blob2)
 
         # new request, ownership for all chunks is there but file does not exist yet
         response = self.client.post(

@@ -1,10 +1,16 @@
 import re
 from itertools import islice
+from typing import Any, Match
 
 from sentry.grouping.component import GroupingComponent
-from sentry.grouping.strategies.base import strategy
+from sentry.grouping.strategies.base import (
+    GroupingContext,
+    ReturnedVariants,
+    produces_variants,
+    strategy,
+)
 from sentry.grouping.strategies.similarity_encoders import text_shingle_encoder
-
+from sentry.interfaces.message import Message
 
 _irrelevant_re = re.compile(
     r"""(?x)
@@ -91,12 +97,12 @@ _irrelevant_re = re.compile(
 )
 
 
-def trim_message_for_grouping(string):
+def trim_message_for_grouping(string: str) -> str:
     s = "\n".join(islice((x for x in string.splitlines() if x.strip()), 2)).strip()
     if s != string:
         s += "..."
 
-    def _handle_match(match):
+    def _handle_match(match: Match[str]) -> str:
         for key, value in match.groupdict().items():
             if value is not None:
                 return "<%s>" % key
@@ -105,21 +111,28 @@ def trim_message_for_grouping(string):
     return _irrelevant_re.sub(_handle_match, s)
 
 
-@strategy(id="message:v1", interfaces=["message"], variants=["default"], score=0)
-def message_v1(message_interface, context, **meta):
+@strategy(id="message:v1", interfaces=["message"], score=0)
+@produces_variants(["default"])
+def message_v1(
+    message_interface: Message, context: GroupingContext, **meta: Any
+) -> ReturnedVariants:
     if context["trim_message"]:
         message_in = message_interface.message or message_interface.formatted or ""
         message_trimmed = trim_message_for_grouping(message_in)
         hint = "stripped common values" if message_in != message_trimmed else None
-        return GroupingComponent(
-            id="message",
-            values=[message_trimmed],
-            hint=hint,
-            similarity_encoder=text_shingle_encoder(5),
-        )
+        return {
+            context["variant"]: GroupingComponent(
+                id="message",
+                values=[message_trimmed],
+                hint=hint,
+                similarity_encoder=text_shingle_encoder(5),
+            )
+        }
     else:
-        return GroupingComponent(
-            id="message",
-            values=[message_interface.message or message_interface.formatted or ""],
-            similarity_encoder=text_shingle_encoder(5),
-        )
+        return {
+            context["variant"]: GroupingComponent(
+                id="message",
+                values=[message_interface.message or message_interface.formatted or ""],
+                similarity_encoder=text_shingle_encoder(5),
+            )
+        }

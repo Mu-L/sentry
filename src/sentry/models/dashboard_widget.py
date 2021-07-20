@@ -2,9 +2,9 @@ from django.db import models
 from django.utils import timezone
 
 from sentry.db.models import (
+    ArrayField,
     BoundedPositiveIntegerField,
     FlexibleForeignKey,
-    ArrayField,
     Model,
     sane_repr,
 )
@@ -59,7 +59,7 @@ class DashboardWidgetQuery(Model):
     A query in a dashboard widget.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     widget = FlexibleForeignKey("sentry.DashboardWidget")
     name = models.CharField(max_length=255)
@@ -84,7 +84,7 @@ class DashboardWidget(Model):
     A dashboard widget.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     dashboard = FlexibleForeignKey("sentry.Dashboard")
     order = BoundedPositiveIntegerField()

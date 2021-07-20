@@ -3,11 +3,11 @@ import os
 import subprocess
 import tempfile
 import time
-
 from email.utils import parseaddr
 from functools import partial
 from operator import attrgetter
 from random import randrange
+from typing import Iterable, Mapping, Optional
 
 import lxml
 import toronado
@@ -23,10 +23,10 @@ from sentry import options
 from sentry.logging import LoggingFormat
 from sentry.models import Activity, Group, GroupEmailThread, Project, User, UserOption
 from sentry.utils import metrics
+from sentry.utils.compat import map
 from sentry.utils.safe import safe_execute
 from sentry.utils.strings import is_valid_dot_atom
 from sentry.web.helpers import render_to_string
-from sentry.utils.compat import map
 
 # The maximum amount of recipients to display in human format.
 MAX_RECIPIENTS = 5
@@ -157,7 +157,11 @@ def is_fake_email(email):
     return email.endswith(FAKE_EMAIL_TLD)
 
 
-def get_email_addresses(user_ids, project=None):
+def get_email_addresses(user_ids: Iterable[int], project: Project = None) -> Mapping[int, str]:
+    """
+    Find the best email addresses for a collection of users. If a project is
+    provided, prefer their project-specific notification preferences.
+    """
     pending = set(user_ids)
     results = {}
 
@@ -190,7 +194,7 @@ class ListResolver:
 
     class UnregisteredTypeError(Exception):
         """
-        Error raised when attempting to build a list-id from an unregisted object type.
+        Error raised when attempting to build a list-id from an unregistered object type.
         """
 
     def __init__(self, namespace, type_handlers):
@@ -297,7 +301,7 @@ class MessageBuilder:
             return render_to_string(self.template, self.context)
         return self._txt_body
 
-    def add_users(self, user_ids, project=None):
+    def add_users(self, user_ids: Iterable[int], project: Optional[Project] = None) -> None:
         self._send_to.update(list(get_email_addresses(user_ids, project).values()))
 
     def build(self, to, reply_to=None, cc=None, bcc=None):
@@ -368,7 +372,7 @@ class MessageBuilder:
         if not to:
             return ""
         if len(to) > MAX_RECIPIENTS:
-            to = to[:MAX_RECIPIENTS] + ["and {} more.".format(len(to[MAX_RECIPIENTS:]))]
+            to = to[:MAX_RECIPIENTS] + [f"and {len(to[MAX_RECIPIENTS:])} more."]
         return ", ".join(to)
 
     def send(self, to=None, cc=None, bcc=None, fail_silently=False):

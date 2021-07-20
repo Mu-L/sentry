@@ -1,4 +1,3 @@
-import React from 'react';
 import {browserHistory} from 'react-router';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
@@ -315,7 +314,7 @@ describe('OrganizationMembersList', function () {
       })
     );
 
-    wrapper.find('SearchWrapper form').simulate('submit');
+    wrapper.find('SearchWrapperWithFilter form').simulate('submit');
 
     expect(routerContext.context.router.push).toHaveBeenCalledTimes(1);
   });

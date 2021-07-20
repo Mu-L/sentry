@@ -1,15 +1,16 @@
-import responses
-import sentry
-
-from sentry.utils.compat.mock import MagicMock
 from urllib.parse import urlencode, urlparse
 
-from sentry.shared_integrations.exceptions import ApiError
+import responses
+from django.urls import reverse
+
+import sentry
 from sentry.constants import ObjectStatus
-from sentry.integrations.github import GitHubIntegrationProvider, API_ERRORS
-from sentry.models import Integration, OrganizationIntegration, Repository, Project
+from sentry.integrations.github import API_ERRORS, GitHubIntegrationProvider
+from sentry.models import Integration, OrganizationIntegration, Project, Repository
 from sentry.plugins.base import plugins
+from sentry.shared_integrations.exceptions import ApiError
 from sentry.testutils import IntegrationTestCase
+from sentry.utils.compat.mock import MagicMock
 from tests.sentry.plugins.testutils import register_mock_plugins, unregister_mock_plugins
 
 
@@ -36,8 +37,8 @@ class GitHubIntegrationTest(IntegrationTestCase):
     def _stub_github(self):
         responses.reset()
 
-        sentry.integrations.github.integration.get_jwt = MagicMock(return_value=b"jwt_token_1")
-        sentry.integrations.github.client.get_jwt = MagicMock(return_value=b"jwt_token_1")
+        sentry.integrations.github.integration.get_jwt = MagicMock(return_value="jwt_token_1")
+        sentry.integrations.github.client.get_jwt = MagicMock(return_value="jwt_token_1")
 
         responses.add(
             responses.POST,
@@ -87,7 +88,7 @@ class GitHubIntegrationTest(IntegrationTestCase):
         )
 
         auth_header = responses.calls[0].request.headers["Authorization"]
-        assert auth_header == b"Bearer jwt_token_1"
+        assert auth_header == "Bearer jwt_token_1"
 
         self.assertDialogSuccess(resp)
         return resp
@@ -146,6 +147,51 @@ class GitHubIntegrationTest(IntegrationTestCase):
         assert oi.config == {}
 
     @responses.activate
+    def test_github_installed_on_another_org(self):
+        self._stub_github()
+        # First installation should be successful
+        self.assert_setup_flow()
+
+        # Second installation attempt for same Github account should fail
+        self.organization_2 = self.create_organization(name="petal", owner=self.user)
+        # Use the same Github installation_id
+        self.init_path_2 = "{}?{}".format(
+            reverse(
+                "sentry-organization-integrations-setup",
+                kwargs={
+                    "organization_slug": self.organization_2.slug,
+                    "provider_id": self.provider.key,
+                },
+            ),
+            urlencode({"installation_id": self.installation_id}),
+        )
+        resp = self.client.get(self.init_path_2)
+        assert (
+            b'{"success":false,"data":{"error":"Github installed on another Sentry organization."}}'
+            in resp.content
+        )
+        assert (
+            b"It seems that your GitHub account has been installed on another Sentry organization. Please uninstall and try again."
+            in resp.content
+        )
+
+        # Delete the Integration
+        integration = Integration.objects.get(external_id=self.installation_id)
+        OrganizationIntegration.objects.filter(
+            organization=self.organization, integration=integration
+        ).delete()
+        integration.delete()
+
+        # Try again and should be successful
+        resp = self.client.get(self.init_path_2)
+        self.assertDialogSuccess(resp)
+        integration = Integration.objects.get(external_id=self.installation_id)
+        assert integration.provider == "github"
+        assert OrganizationIntegration.objects.filter(
+            organization=self.organization_2, integration=integration
+        ).exists()
+
+    @responses.activate
     def test_reinstall_flow(self):
         self._stub_github()
         self.assert_setup_flow()
@@ -177,7 +223,7 @@ class GitHubIntegrationTest(IntegrationTestCase):
         assert resp.status_code == 200
 
         auth_header = responses.calls[0].request.headers["Authorization"]
-        assert auth_header == b"Bearer jwt_token_1"
+        assert auth_header == "Bearer jwt_token_1"
 
         integration = Integration.objects.get(provider=self.provider.key)
         assert integration.status == ObjectStatus.VISIBLE
@@ -216,9 +262,10 @@ class GitHubIntegrationTest(IntegrationTestCase):
         with self.tasks():
             self.assert_setup_flow()
 
+        querystring = urlencode({"q": "org:Test Organization ex"})
         responses.add(
             responses.GET,
-            self.base_url + "/search/repositories?q=org:test%20ex",
+            f"{self.base_url}/search/repositories?{querystring}",
             json={
                 "items": [
                     {"name": "example", "full_name": "test/example"},

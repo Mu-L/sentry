@@ -1,6 +1,5 @@
 import responses
-
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.models import Environment, Integration, Rule, RuleActivity, RuleActivityType, RuleStatus
 from sentry.testutils import APITestCase
@@ -167,6 +166,7 @@ class UpdateProjectRuleTest(APITestCase):
             url,
             data={
                 "name": "hello world",
+                "owner": self.user.id,
                 "actionMatch": "any",
                 "filterMatch": "any",
                 "actions": [{"id": "sentry.rules.actions.notify_event.NotifyEventAction"}],
@@ -180,6 +180,7 @@ class UpdateProjectRuleTest(APITestCase):
 
         rule = Rule.objects.get(id=rule.id)
         assert rule.label == "hello world"
+        assert rule.owner == self.user.actor
         assert rule.environment_id is None
         assert rule.data["action_match"] == "any"
         assert rule.data["filter_match"] == "any"
@@ -188,6 +189,58 @@ class UpdateProjectRuleTest(APITestCase):
         ]
         assert rule.data["conditions"] == conditions
 
+        assert RuleActivity.objects.filter(rule=rule, type=RuleActivityType.UPDATED.value).exists()
+
+    def test_no_owner(self):
+        self.login_as(user=self.user)
+
+        project = self.create_project()
+
+        rule = Rule.objects.create(project=project, label="foo")
+
+        conditions = [
+            {
+                "id": "sentry.rules.conditions.first_seen_event.FirstSeenEventCondition",
+                "key": "foo",
+                "match": "eq",
+                "value": "bar",
+            }
+        ]
+
+        url = reverse(
+            "sentry-api-0-project-rule-details",
+            kwargs={
+                "organization_slug": project.organization.slug,
+                "project_slug": project.slug,
+                "rule_id": rule.id,
+            },
+        )
+        response = self.client.put(
+            url,
+            data={
+                "name": "hello world",
+                "owner": None,
+                "actionMatch": "any",
+                "filterMatch": "any",
+                "actions": [{"id": "sentry.rules.actions.notify_event.NotifyEventAction"}],
+                "conditions": conditions,
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.content
+        assert response.data["id"] == str(rule.id)
+
+        rule = Rule.objects.get(id=rule.id)
+        assert rule.label == "hello world"
+        assert rule.owner is None
+        assert rule.environment_id is None
+        assert rule.data["action_match"] == "any"
+        assert rule.data["filter_match"] == "any"
+        assert rule.data["actions"] == [
+            {"id": "sentry.rules.actions.notify_event.NotifyEventAction"}
+        ]
+        assert rule.data["conditions"] == conditions
         assert RuleActivity.objects.filter(rule=rule, type=RuleActivityType.UPDATED.value).exists()
 
     def test_update_name(self):
@@ -471,6 +524,7 @@ class UpdateProjectRuleTest(APITestCase):
 
         assert response.status_code == 400, response.content
 
+    @responses.activate
     def test_slack_channel_id_saved(self):
         self.login_as(user=self.user)
 
@@ -496,6 +550,15 @@ class UpdateProjectRuleTest(APITestCase):
                 "project_slug": project.slug,
                 "rule_id": rule.id,
             },
+        )
+        responses.add(
+            method=responses.GET,
+            url="https://slack.com/api/conversations.info",
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {"ok": "true", "channel": {"name": "team-team-team", "id": "CSVK0921"}}
+            ),
         )
         response = self.client.put(
             url,

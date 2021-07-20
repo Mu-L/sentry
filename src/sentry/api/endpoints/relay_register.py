@@ -1,23 +1,21 @@
-from rest_framework.response import Response
-from rest_framework import serializers, status
-
 from django.conf import settings
 from django.utils import timezone
+from rest_framework import serializers, status
+from rest_framework.response import Response
+from sentry_relay import (
+    UnpackErrorSignatureExpired,
+    create_register_challenge,
+    is_version_supported,
+    validate_register_response,
+)
 
 from sentry import options
-from sentry.api.authentication import is_internal_relay
-from sentry.utils import json
-from sentry.models import Relay, RelayUsage
+from sentry.api.authentication import is_internal_relay, is_static_relay, relay_from_id
 from sentry.api.base import Endpoint
 from sentry.api.serializers import serialize
+from sentry.models import Relay, RelayUsage
 from sentry.relay.utils import get_header_relay_id, get_header_relay_signature
-
-from sentry_relay import (
-    create_register_challenge,
-    validate_register_response,
-    is_version_supported,
-    UnpackErrorSignatureExpired,
-)
+from sentry.utils import json
 
 
 class RelayIdSerializer(serializers.Serializer):
@@ -68,8 +66,8 @@ class RelayRegisterChallengeEndpoint(Endpoint):
         if not public_key:
             return Response({"detail": "Missing public key"}, status=status.HTTP_400_FORBIDDEN)
 
-        if not settings.SENTRY_RELAY_OPEN_REGISTRATION and not is_internal_relay(
-            request, public_key
+        if not settings.SENTRY_RELAY_OPEN_REGISTRATION and not (
+            is_internal_relay(request, public_key) or is_static_relay(request)
         ):
             return Response(
                 {"detail": "Relay is not allowed to register"}, status=status.HTTP_403_FORBIDDEN
@@ -97,11 +95,9 @@ class RelayRegisterChallengeEndpoint(Endpoint):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            relay = Relay.objects.get(relay_id=relay_id)
-        except Relay.DoesNotExist:
-            pass
-        else:
+        relay, static = relay_from_id(request, relay_id)
+
+        if relay is not None:
             if relay.public_key != str(public_key):
                 # This happens if we have an ID collision or someone copies an existing id
                 return Response(
@@ -162,24 +158,28 @@ class RelayRegisterResponseEndpoint(Endpoint):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        is_internal = is_internal_relay(request, public_key)
-        try:
-            relay = Relay.objects.get(relay_id=relay_id)
-        except Relay.DoesNotExist:
-            relay = Relay.objects.create(
-                relay_id=relay_id, public_key=public_key, is_internal=is_internal
-            )
-        else:
-            relay.is_internal = is_internal
-            relay.save()
+        relay, static = relay_from_id(request, relay_id)
 
-        try:
-            relay_usage = RelayUsage.objects.get(relay_id=relay_id, version=version)
-        except RelayUsage.DoesNotExist:
-            RelayUsage.objects.create(relay_id=relay_id, version=version, public_key=public_key)
-        else:
-            relay_usage.last_seen = timezone.now()
-            relay_usage.public_key = public_key
-            relay_usage.save()
+        if not static:
+            is_internal = is_internal_relay(request, public_key)
+
+            if relay is None:
+                relay = Relay.objects.create(
+                    relay_id=relay_id, public_key=public_key, is_internal=is_internal
+                )
+            else:
+                # update the internal flag in case it is changed
+                relay.is_internal = is_internal
+                relay.save()
+
+            # only update usage for non static relays (static relays should not access the db)
+            try:
+                relay_usage = RelayUsage.objects.get(relay_id=relay_id, version=version)
+            except RelayUsage.DoesNotExist:
+                RelayUsage.objects.create(relay_id=relay_id, version=version, public_key=public_key)
+            else:
+                relay_usage.last_seen = timezone.now()
+                relay_usage.public_key = public_key
+                relay_usage.save()
 
         return Response(serialize({"relay_id": relay.relay_id}))

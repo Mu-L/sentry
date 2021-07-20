@@ -2,10 +2,10 @@ import re
 
 from sentry.constants import TAG_LABELS
 from sentry.tagstore.exceptions import (
-    TagKeyNotFound,
-    TagValueNotFound,
     GroupTagKeyNotFound,
     GroupTagValueNotFound,
+    TagKeyNotFound,
+    TagValueNotFound,
 )
 from sentry.utils.services import Service, raises
 
@@ -264,7 +264,7 @@ class TagStorage(Service):
         """
         raise NotImplementedError
 
-    def get_release_tags(self, project_ids, environment_id, versions):
+    def get_release_tags(self, organization_id, project_ids, environment_id, versions):
         """
         >>> get_release_tags([1, 2], 3, ["1", "2"])
         """

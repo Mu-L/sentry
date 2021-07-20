@@ -1,6 +1,7 @@
-import pytz
-
+import time
 from datetime import timedelta
+
+import pytz
 from django.utils import timezone
 
 from sentry.api.serializers import serialize
@@ -10,19 +11,22 @@ from sentry.api.serializers.models.group import (
     snuba_tsdb,
 )
 from sentry.models import (
-    Group,
     Environment,
+    Group,
     GroupEnvironment,
     GroupLink,
     GroupResolution,
     GroupSnooze,
     GroupStatus,
     GroupSubscription,
+    NotificationSetting,
     UserOption,
-    UserOptionValue,
 )
+from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
 from sentry.testutils import APITestCase, SnubaTestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.types.integrations import ExternalProviders
+from sentry.utils.cache import cache
 from sentry.utils.compat import mock
 from sentry.utils.compat.mock import patch
 
@@ -177,55 +181,113 @@ class GroupSerializerSnubaTest(APITestCase, SnubaTestCase):
         group = self.create_group()
 
         combinations = (
-            # ((default, project), (subscribed, details))
-            ((UserOptionValue.all_conversations, None), (True, None)),
-            ((UserOptionValue.all_conversations, UserOptionValue.all_conversations), (True, None)),
+            # (default, project, subscribed, has_details)
             (
-                (UserOptionValue.all_conversations, UserOptionValue.participating_only),
-                (False, None),
+                NotificationSettingOptionValues.ALWAYS,
+                NotificationSettingOptionValues.DEFAULT,
+                True,
+                False,
             ),
             (
-                (UserOptionValue.all_conversations, UserOptionValue.no_conversations),
-                (False, {"disabled": True}),
-            ),
-            ((None, None), (False, None)),
-            ((UserOptionValue.participating_only, None), (False, None)),
-            ((UserOptionValue.participating_only, UserOptionValue.all_conversations), (True, None)),
-            (
-                (UserOptionValue.participating_only, UserOptionValue.participating_only),
-                (False, None),
+                NotificationSettingOptionValues.ALWAYS,
+                NotificationSettingOptionValues.ALWAYS,
+                True,
+                False,
             ),
             (
-                (UserOptionValue.participating_only, UserOptionValue.no_conversations),
-                (False, {"disabled": True}),
+                NotificationSettingOptionValues.ALWAYS,
+                NotificationSettingOptionValues.SUBSCRIBE_ONLY,
+                False,
+                False,
             ),
-            ((UserOptionValue.no_conversations, None), (False, {"disabled": True})),
-            ((UserOptionValue.no_conversations, UserOptionValue.all_conversations), (True, None)),
-            ((UserOptionValue.no_conversations, UserOptionValue.participating_only), (False, None)),
             (
-                (UserOptionValue.no_conversations, UserOptionValue.no_conversations),
-                (False, {"disabled": True}),
+                NotificationSettingOptionValues.ALWAYS,
+                NotificationSettingOptionValues.NEVER,
+                False,
+                True,
+            ),
+            (
+                NotificationSettingOptionValues.DEFAULT,
+                NotificationSettingOptionValues.DEFAULT,
+                False,
+                False,
+            ),
+            (
+                NotificationSettingOptionValues.SUBSCRIBE_ONLY,
+                NotificationSettingOptionValues.DEFAULT,
+                False,
+                False,
+            ),
+            (
+                NotificationSettingOptionValues.SUBSCRIBE_ONLY,
+                NotificationSettingOptionValues.ALWAYS,
+                True,
+                False,
+            ),
+            (
+                NotificationSettingOptionValues.SUBSCRIBE_ONLY,
+                NotificationSettingOptionValues.SUBSCRIBE_ONLY,
+                False,
+                False,
+            ),
+            (
+                NotificationSettingOptionValues.SUBSCRIBE_ONLY,
+                NotificationSettingOptionValues.NEVER,
+                False,
+                True,
+            ),
+            (
+                NotificationSettingOptionValues.NEVER,
+                NotificationSettingOptionValues.DEFAULT,
+                False,
+                True,
+            ),
+            (
+                NotificationSettingOptionValues.NEVER,
+                NotificationSettingOptionValues.ALWAYS,
+                True,
+                False,
+            ),
+            (
+                NotificationSettingOptionValues.NEVER,
+                NotificationSettingOptionValues.SUBSCRIBE_ONLY,
+                False,
+                False,
+            ),
+            (
+                NotificationSettingOptionValues.NEVER,
+                NotificationSettingOptionValues.NEVER,
+                False,
+                True,
             ),
         )
 
-        def maybe_set_value(project, value):
-            if value is not None:
-                UserOption.objects.set_value(
-                    user=user, project=project, key="workflow:notifications", value=value
-                )
-            else:
-                UserOption.objects.unset_value(
-                    user=user, project=project, key="workflow:notifications"
-                )
-
-        for options, (is_subscribed, subscription_details) in combinations:
-            default_value, project_value = options
+        for default_value, project_value, is_subscribed, has_details in combinations:
             UserOption.objects.clear_local_cache()
-            maybe_set_value(None, default_value)
-            maybe_set_value(group.project, project_value)
+
+            NotificationSetting.objects.update_settings(
+                ExternalProviders.EMAIL,
+                NotificationSettingTypes.WORKFLOW,
+                default_value,
+                user=user,
+            )
+            NotificationSetting.objects.update_settings(
+                ExternalProviders.EMAIL,
+                NotificationSettingTypes.WORKFLOW,
+                project_value,
+                user=user,
+                project=group.project,
+            )
+
             result = serialize(group, user, serializer=GroupSerializerSnuba())
+            subscription_details = result.get("subscriptionDetails")
+
             assert result["isSubscribed"] is is_subscribed
-            assert result.get("subscriptionDetails") == subscription_details
+            assert (
+                subscription_details == {"disabled": True}
+                if has_details
+                else subscription_details is None
+            )
 
     def test_global_no_conversations_overrides_group_subscription(self):
         user = self.create_user()
@@ -235,11 +297,11 @@ class GroupSerializerSnubaTest(APITestCase, SnubaTestCase):
             user=user, group=group, project=group.project, is_active=True
         )
 
-        UserOption.objects.set_value(
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.WORKFLOW,
+            NotificationSettingOptionValues.NEVER,
             user=user,
-            project=None,
-            key="workflow:notifications",
-            value=UserOptionValue.no_conversations,
         )
 
         result = serialize(group, user, serializer=GroupSerializerSnuba())
@@ -254,11 +316,12 @@ class GroupSerializerSnubaTest(APITestCase, SnubaTestCase):
             user=user, group=group, project=group.project, is_active=True
         )
 
-        UserOption.objects.set_value(
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.WORKFLOW,
+            NotificationSettingOptionValues.NEVER,
             user=user,
             project=group.project,
-            key="workflow:notifications",
-            value=UserOptionValue.no_conversations,
         )
 
         result = serialize(group, user, serializer=GroupSerializerSnuba())
@@ -380,3 +443,179 @@ class StreamGroupSerializerTestCase(APITestCase, SnubaTestCase):
             assert get_range.call_count == 1
             for args, kwargs in get_range.call_args_list:
                 assert kwargs["environment_ids"] is None
+
+    def test_session_count(self):
+        group = self.group
+
+        environment = Environment.get_or_create(group.project, "prod")
+        dev_environment = Environment.get_or_create(group.project, "dev")
+        no_sessions_environment = Environment.get_or_create(group.project, "no_sessions")
+
+        self.received = time.time()
+        self.session_started = time.time() // 60 * 60
+        self.session_release = "foo@1.0.0"
+        self.session_crashed_release = "foo@2.0.0"
+        self.store_session(
+            {
+                "session_id": "5d52fd05-fcc9-4bf3-9dc9-267783670341",
+                "distinct_id": "39887d89-13b2-4c84-8c23-5d13d2102666",
+                "status": "ok",
+                "seq": 0,
+                "release": self.session_release,
+                "environment": "dev",
+                "retention_days": 90,
+                "org_id": self.project.organization_id,
+                "project_id": self.project.id,
+                "duration": 60.0,
+                "errors": 0,
+                "started": self.session_started,
+                "received": self.received,
+            }
+        )
+
+        self.store_session(
+            {
+                "session_id": "5e910c1a-6941-460e-9843-24103fb6a63c",
+                "distinct_id": "39887d89-13b2-4c84-8c23-5d13d2102666",
+                "status": "ok",
+                "seq": 0,
+                "release": self.session_release,
+                "environment": "prod",
+                "retention_days": 90,
+                "org_id": self.project.organization_id,
+                "project_id": self.project.id,
+                "duration": None,
+                "errors": 0,
+                "started": self.session_started,
+                "received": self.received,
+            }
+        )
+
+        self.store_session(
+            {
+                "session_id": "5e910c1a-6941-460e-9843-24103fb6a63c",
+                "distinct_id": "39887d89-13b2-4c84-8c23-5d13d2102666",
+                "status": "exited",
+                "seq": 1,
+                "release": self.session_release,
+                "environment": "prod",
+                "retention_days": 90,
+                "org_id": self.project.organization_id,
+                "project_id": self.project.id,
+                "duration": 30.0,
+                "errors": 0,
+                "started": self.session_started,
+                "received": self.received,
+            }
+        )
+
+        self.store_session(
+            {
+                "session_id": "a148c0c5-06a2-423b-8901-6b43b812cf82",
+                "distinct_id": "39887d89-13b2-4c84-8c23-5d13d2102666",
+                "status": "crashed",
+                "seq": 0,
+                "release": self.session_crashed_release,
+                "environment": "prod",
+                "retention_days": 90,
+                "org_id": self.project.organization_id,
+                "project_id": self.project.id,
+                "duration": 60.0,
+                "errors": 0,
+                "started": self.session_started,
+                "received": self.received,
+            }
+        )
+
+        result = serialize(
+            [group],
+            serializer=StreamGroupSerializerSnuba(stats_period="14d"),
+        )
+        assert "sessionCount" not in result[0]
+        result = serialize(
+            [group],
+            serializer=StreamGroupSerializerSnuba(stats_period="14d", expand=["sessions"]),
+        )
+        assert result[0]["sessionCount"] == 3
+        result = serialize(
+            [group],
+            serializer=StreamGroupSerializerSnuba(
+                environment_ids=[environment.id], stats_period="14d", expand=["sessions"]
+            ),
+        )
+        assert result[0]["sessionCount"] == 2
+
+        result = serialize(
+            [group],
+            serializer=StreamGroupSerializerSnuba(
+                environment_ids=[no_sessions_environment.id],
+                stats_period="14d",
+                expand=["sessions"],
+            ),
+        )
+        assert result[0]["sessionCount"] is None
+
+        result = serialize(
+            [group],
+            serializer=StreamGroupSerializerSnuba(
+                environment_ids=[dev_environment.id], stats_period="14d", expand=["sessions"]
+            ),
+        )
+        assert result[0]["sessionCount"] == 1
+
+        self.store_session(
+            {
+                "session_id": "a148c0c5-06a2-423b-8901-6b43b812cf83",
+                "distinct_id": "39887d89-13b2-4c84-8c23-5d13d2102667",
+                "status": "ok",
+                "seq": 0,
+                "release": self.session_release,
+                "environment": "dev",
+                "retention_days": 90,
+                "org_id": self.project.organization_id,
+                "project_id": self.project.id,
+                "duration": 60.0,
+                "errors": 0,
+                "started": self.session_started - 1590061,  # approximately 18 days
+                "received": self.received - 1590061,  # approximately 18 days
+            }
+        )
+
+        result = serialize(
+            [group],
+            serializer=StreamGroupSerializerSnuba(
+                environment_ids=[dev_environment.id],
+                stats_period="14d",
+                expand=["sessions"],
+                start=timezone.now() - timedelta(days=30),
+                end=timezone.now() - timedelta(days=15),
+            ),
+        )
+        assert result[0]["sessionCount"] == 1
+
+        # Delete the cache from the query we did above, else this result comes back as 1 instead of 0.5
+        cache.delete(f"w-s:{group.project.id}-{dev_environment.id}")
+        project2 = self.create_project(
+            organization=self.organization, teams=[self.team], name="Another project"
+        )
+        data = {
+            "fingerprint": ["meow"],
+            "timestamp": iso_format(timezone.now()),
+            "type": "error",
+            "exception": [{"type": "Foo"}],
+        }
+        event = self.store_event(data=data, project_id=project2.id)
+        self.store_event(data=data, project_id=project2.id)
+        self.store_event(data=data, project_id=project2.id)
+
+        result = serialize(
+            [group, event.group],
+            serializer=StreamGroupSerializerSnuba(
+                environment_ids=[dev_environment.id],
+                stats_period="14d",
+                expand=["sessions"],
+            ),
+        )
+        assert result[0]["sessionCount"] == 2
+        # No sessions in project2
+        assert result[1]["sessionCount"] is None

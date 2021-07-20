@@ -1,11 +1,11 @@
 from django.utils import timezone
 
-from sentry.tasks.groupowner import process_suspect_commits, PREFERRED_GROUP_OWNER_AGE
-from sentry.testutils import TestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
-from sentry.models import Repository
+from sentry.models import GroupRelease, Repository
 from sentry.models.groupowner import GroupOwner, GroupOwnerType
-from sentry.utils.committers import get_serialized_event_file_committers, get_frame_paths
+from sentry.tasks.groupowner import PREFERRED_GROUP_OWNER_AGE, process_suspect_commits
+from sentry.testutils import TestCase
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils.committers import get_frame_paths, get_serialized_event_file_committers
 from sentry.utils.compat.mock import patch
 
 
@@ -18,6 +18,9 @@ class TestGroupOwners(TestCase):
         self.release = self.create_release(project=self.project, version="v1337")
         self.group = self.create_group(
             project=self.project, message="Kaboom!", first_release=self.release
+        )
+        GroupRelease.objects.create(
+            group_id=self.group.id, release_id=self.release.id, project_id=self.project.id
         )
 
         self.event = self.store_event(
@@ -49,6 +52,9 @@ class TestGroupOwners(TestCase):
                 "fingerprint": ["put-me-in-the-control-group"],
             },
             project_id=self.project.id,
+        )
+        GroupRelease.objects.create(
+            group_id=self.event.group.id, project_id=self.project.id, release_id=self.release.id
         )
 
     def set_release_commits(self, author_email):

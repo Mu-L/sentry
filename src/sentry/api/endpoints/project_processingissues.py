@@ -3,11 +3,10 @@ from rest_framework.response import Response
 from sentry.api.bases.project import ProjectEndpoint
 from sentry.api.helpers.processing_issues import get_processing_issues
 from sentry.api.serializers import serialize
-from sentry.models import ProcessingIssue
+from sentry.models import ApiToken, ProcessingIssue
 from sentry.reprocessing import trigger_reprocessing
-from sentry.web.helpers import render_to_response
-from sentry.models import ApiToken
 from sentry.utils.http import absolute_uri
+from sentry.web.helpers import render_to_response
 
 
 class ProjectProcessingIssuesDiscardEndpoint(ProjectEndpoint):
@@ -23,7 +22,7 @@ class ProjectProcessingIssuesFixEndpoint(ProjectEndpoint):
     def get(self, request, project):
         token = None
 
-        if request.user_from_signed_request and request.user.is_authenticated():
+        if request.user_from_signed_request and request.user.is_authenticated:
             tokens = [
                 x
                 for x in ApiToken.objects.filter(user=request.user).all()

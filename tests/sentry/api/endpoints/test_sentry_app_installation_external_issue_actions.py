@@ -1,6 +1,6 @@
 import responses
+from django.urls import reverse
 
-from django.core.urlresolvers import reverse
 from sentry.models import PlatformExternalIssue
 from sentry.testutils import APITestCase
 
@@ -52,7 +52,7 @@ class SentryAppInstallationExternalIssuesEndpointTest(APITestCase):
         assert response.status_code == 200
         assert response.data == {
             "id": str(external_issue.id),
-            "groupId": str(self.group.id),
+            "issueId": str(self.group.id),
             "serviceType": self.sentry_app.slug,
             "displayName": "ProjectName#issue-1",
             "webUrl": "https://example.com/project/issue-id",

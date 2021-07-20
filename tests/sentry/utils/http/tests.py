@@ -1,19 +1,19 @@
-from sentry.utils.compat import mock
 import unittest
 
-from exam import fixture
 from django.http import HttpRequest
+from exam import fixture
 
 from sentry import options
 from sentry.models import Project
 from sentry.testutils import TestCase
+from sentry.utils.compat import mock
 from sentry.utils.http import (
+    absolute_uri,
+    get_origins,
+    heuristic_decode,
     is_same_domain,
     is_valid_origin,
-    get_origins,
-    absolute_uri,
     origin_from_request,
-    heuristic_decode,
 )
 
 
@@ -67,12 +67,12 @@ class GetOriginsTestCase(TestCase):
 
         with self.settings(SENTRY_ALLOW_ORIGIN="http://example.com"):
             result = get_origins(project)
-            self.assertEquals(result, frozenset(["http://foo.example", "http://example.com"]))
+            self.assertEquals(result, frozenset(["http://foo.example"]))
 
     def test_setting_empty(self):
         with self.settings(SENTRY_ALLOW_ORIGIN=None):
             result = get_origins(None)
-            self.assertEquals(result, frozenset([]))
+            self.assertEquals(result, frozenset(["*"]))
 
     def test_setting_all(self):
         with self.settings(SENTRY_ALLOW_ORIGIN="*"):

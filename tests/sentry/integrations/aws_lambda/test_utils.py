@@ -2,22 +2,22 @@ from django.core.cache import cache
 from django.test import override_settings
 
 from sentry.integrations.aws_lambda.utils import (
-    parse_arn,
-    get_supported_functions,
-    get_version_of_arn,
+    OPTION_ACCOUNT_NUMBER,
+    OPTION_LAYER_NAME,
+    OPTION_VERSION,
+    get_function_layer_arns,
+    get_index_of_sentry_layer,
     get_latest_layer_for_function,
     get_latest_layer_version,
-    get_index_of_sentry_layer,
-    get_function_layer_arns,
     get_option_value,
-    OPTION_VERSION,
-    OPTION_LAYER_NAME,
-    OPTION_ACCOUNT_NUMBER,
+    get_supported_functions,
+    get_version_of_arn,
+    parse_arn,
 )
 from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.testutils import TestCase
 from sentry.testutils.helpers.faux import Mock
-from sentry.utils.compat.mock import patch, MagicMock
+from sentry.utils.compat.mock import MagicMock, patch
 
 
 class ParseArnTest(TestCase):
@@ -104,6 +104,7 @@ class GetSupportedFunctionsTest(TestCase):
                 "Functions": [
                     {"FunctionName": "lambdaC", "Runtime": "nodejs12.x"},
                     {"FunctionName": "lambdaD", "Runtime": "python3.6"},
+                    {"FunctionName": "lambdaE", "Runtime": "nodejs14.x"},
                 ]
             },
         ]
@@ -115,6 +116,8 @@ class GetSupportedFunctionsTest(TestCase):
         {"FunctionName": "lambdaA", "Runtime": "nodejs12.x"},
         {"FunctionName": "lambdaB", "Runtime": "nodejs10.x"},
         {"FunctionName": "lambdaC", "Runtime": "nodejs12.x"},
+        {"FunctionName": "lambdaD", "Runtime": "python3.6"},
+        {"FunctionName": "lambdaE", "Runtime": "nodejs14.x"},
     ]
 
     mock_client.get_paginator.assert_called_once_with("list_functions")
@@ -124,6 +127,10 @@ class GetOptionValueTest(TestCase):
     node_fn = {
         "Runtime": "nodejs10.x",
         "FunctionArn": "arn:aws:lambda:us-east-2:599817902985:function:lambdaB",
+    }
+    python_fn = {
+        "Runtime": "python3.6",
+        "FunctionArn": "arn:aws:lambda:us-east-2:599817902985:function:lambdaC",
     }
 
     cache_value = {
@@ -139,13 +146,29 @@ class GetOptionValueTest(TestCase):
                 {"region": "us-east-2", "version": "19"},
                 {"region": "us-west-1", "version": "17"},
             ],
-        }
+        },
+        "aws-layer:python": {
+            "name": "AWS Lambda Python Layer",
+            "canonical": "aws-layer:python",
+            "sdk_version": "0.20.3",
+            "account_number": "943013980633",
+            "layer_name": "SentryPythonServerlessSDK",
+            "repo_url": "https://github.com/getsentry/sentry-python",
+            "main_docs_url": "https://docs.sentry.io/platforms/python/guides/aws-lambda/",
+            "regions": [
+                {"region": "eu-west-1", "version": "2"},
+                {"region": "us-east-2", "version": "2"},
+            ],
+        },
     }
 
     def test_no_cache(self):
         assert get_option_value(self.node_fn, OPTION_VERSION) == "3"
         assert get_option_value(self.node_fn, OPTION_LAYER_NAME) == "my-layer"
         assert get_option_value(self.node_fn, OPTION_ACCOUNT_NUMBER) == "1234"
+        assert get_option_value(self.python_fn, OPTION_VERSION) == "34"
+        assert get_option_value(self.python_fn, OPTION_LAYER_NAME) == "my-python-layer"
+        assert get_option_value(self.python_fn, OPTION_ACCOUNT_NUMBER) == "1234"
 
     @patch.object(cache, "get")
     def test_with_cache(self, mock_get):
@@ -154,6 +177,11 @@ class GetOptionValueTest(TestCase):
             assert get_option_value(self.node_fn, OPTION_VERSION) == "19"
             assert get_option_value(self.node_fn, OPTION_LAYER_NAME) == "SentryNodeServerlessSDK"
             assert get_option_value(self.node_fn, OPTION_ACCOUNT_NUMBER) == "943013980633"
+            assert get_option_value(self.python_fn, OPTION_VERSION) == "2"
+            assert (
+                get_option_value(self.python_fn, OPTION_LAYER_NAME) == "SentryPythonServerlessSDK"
+            )
+            assert get_option_value(self.python_fn, OPTION_ACCOUNT_NUMBER) == "943013980633"
 
     @patch.object(cache, "get")
     def test_invalid_region(self, mock_get):

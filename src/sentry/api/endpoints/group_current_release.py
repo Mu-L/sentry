@@ -1,6 +1,6 @@
+import sentry_sdk
 from rest_framework.response import Response
 
-import sentry_sdk
 from sentry.api.base import EnvironmentMixin
 from sentry.api.bases import GroupEndpoint
 from sentry.api.helpers.environments import get_environments
@@ -25,7 +25,7 @@ class GroupCurrentReleaseEndpoint(GroupEndpoint, EnvironmentMixin):
 
         group_releases = GroupRelease.objects.filter(
             group_id=group.id,
-            release_id=release_envs[:1],
+            release_id__in=release_envs[:1],
         )
         if environments:
             group_releases = group_releases.filter(

@@ -1,9 +1,4 @@
-import {
-  QueryResults,
-  stringifyQueryObject,
-  tokenizeSearch,
-  TokenType,
-} from 'app/utils/tokenizeSearch';
+import {QueryResults, tokenizeSearch, TokenType} from 'app/utils/tokenizeSearch';
 
 describe('utils/tokenizeSearch', function () {
   describe('tokenizeSearch()', function () {
@@ -180,6 +175,26 @@ describe('utils/tokenizeSearch', function () {
           tagValues: {country: ['>canada'], 'coronaFree()': ['<newzealand']},
         },
       },
+      {
+        name: 'correctly preserves leading/trailing escaped quotes',
+        string: 'a:"\\"a\\""',
+        object: {
+          tokens: [{type: TokenType.TAG, key: 'a', value: '\\"a\\"'}],
+          tagValues: {a: ['\\"a\\"']},
+        },
+      },
+      {
+        name: 'correctly tokenizes escaped quotes',
+        string: 'a:"i \\" quote" b:"b\\"bb" c:"cc"',
+        object: {
+          tokens: [
+            {type: TokenType.TAG, key: 'a', value: 'i \\" quote'},
+            {type: TokenType.TAG, key: 'b', value: 'b\\"bb'},
+            {type: TokenType.TAG, key: 'c', value: 'cc'},
+          ],
+          tagValues: {a: ['i \\" quote'], b: ['b\\"bb'], c: ['cc']},
+        },
+      },
     ];
 
     for (const {name, string, object} of cases) {
@@ -203,8 +218,13 @@ describe('utils/tokenizeSearch', function () {
       results.addTagValues('d', ['d']);
       expect(results.formatString()).toEqual('a:a b:b c:c1 c:c2 d:d');
 
+      results.addTagValues('e', ['e1*e2\\e3']);
+      expect(results.formatString()).toEqual('a:a b:b c:c1 c:c2 d:d e:"e1\\*e2\\e3"');
+
       results.addStringTag('d:d2');
-      expect(results.formatString()).toEqual('a:a b:b c:c1 c:c2 d:d d:d2');
+      expect(results.formatString()).toEqual(
+        'a:a b:b c:c1 c:c2 d:d e:"e1\\*e2\\e3" d:d2'
+      );
     });
 
     it('add text searches to query object', function () {
@@ -225,6 +245,16 @@ describe('utils/tokenizeSearch', function () {
       results.query = ['x', 'y'];
       expect(results.formatString()).toEqual('a:a d:d x y');
       expect(results.query).toEqual(['x', 'y']);
+
+      results.query = ['a b c'];
+      expect(results.formatString()).toEqual('a:a d:d "a b c"');
+      expect(results.query).toEqual(['a b c']);
+
+      results.query = ['invalid literal for int() with base'];
+      expect(results.formatString()).toEqual(
+        'a:a d:d "invalid literal for int() with base"'
+      );
+      expect(results.query).toEqual(['invalid literal for int() with base']);
     });
 
     it('add ops to query object', function () {
@@ -335,9 +365,21 @@ describe('utils/tokenizeSearch', function () {
 
       expect(results.getTagKeys()).toEqual(['tag', 'other']);
     });
+
+    it('getTagValues', () => {
+      const results = new QueryResults([
+        'tag:value',
+        'other:value',
+        'tag:value2',
+        'additional text',
+      ]);
+      expect(results.getTagValues('tag')).toEqual(['value', 'value2']);
+
+      expect(results.getTagValues('nonexistent')).toEqual([]);
+    });
   });
 
-  describe('stringifyQueryObject()', function () {
+  describe('QueryResults.formatString', function () {
     const cases = [
       {
         name: 'should convert a basic object to a query string',
@@ -443,7 +485,7 @@ describe('utils/tokenizeSearch', function () {
     ];
 
     for (const {name, string, object} of cases) {
-      it(name, () => expect(stringifyQueryObject(object)).toEqual(string));
+      it(name, () => expect(object.formatString()).toEqual(string));
     }
   });
 });

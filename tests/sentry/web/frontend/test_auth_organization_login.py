@@ -1,14 +1,17 @@
+from django.test import override_settings
+from django.urls import reverse
 from exam import fixture
-from django.core.urlresolvers import reverse
 
+from sentry.auth.authenticators import RecoveryCodeInterface, TotpInterface
 from sentry.models import (
     AuthIdentity,
     AuthProvider,
-    OrganizationOption,
     OrganizationMember,
+    OrganizationOption,
     UserEmail,
 )
 from sentry.testutils import AuthProviderTestCase
+from sentry.testutils.helpers import with_feature
 
 
 # TODO(dcramer): this is an integration test and repeats tests from
@@ -182,16 +185,21 @@ class OrganizationAuthLoginTest(AuthProviderTestCase):
         assert not getattr(member.flags, "sso:invalid")
 
     def test_flow_as_unauthenticated_existing_matched_user_with_merge(self):
-        auth_provider = AuthProvider.objects.create(
-            organization=self.organization, provider="dummy"
-        )
         user = self.create_user("bar@example.com")
+
+        user.update(is_superuser=False)
+        org1 = self.create_organization(name="bar", owner=user)
+        path = reverse("sentry-auth-organization", args=[org1.slug])
+        # create a second org that the user belongs to, ensure they are redirected to correct
+        self.create_organization(name="zap", owner=user)
+
+        auth_provider = AuthProvider.objects.create(organization=org1, provider="dummy")
 
         email = user.emails.all()[:1].get()
         email.is_verified = False
         email.save()
 
-        resp = self.client.post(self.path, {"init": True})
+        resp = self.client.post(path, {"init": True})
 
         assert resp.status_code == 200
         assert self.provider.TEMPLATE in resp.content.decode("utf-8")
@@ -215,15 +223,14 @@ class OrganizationAuthLoginTest(AuthProviderTestCase):
         resp = self.client.post(path, {"op": "confirm"}, follow=True)
         assert resp.redirect_chain == [
             (reverse("sentry-login"), 302),
-            ("/organizations/foo/issues/", 302),
+            (f"/organizations/{org1.slug}/issues/", 302),
         ]
         auth_identity = AuthIdentity.objects.get(auth_provider=auth_provider)
 
         new_user = auth_identity.user
         assert new_user == user
 
-        member = OrganizationMember.objects.get(organization=self.organization, user=user)
-
+        member = OrganizationMember.objects.get(organization=org1, user=user)
         assert getattr(member.flags, "sso:linked")
         assert not getattr(member.flags, "sso:invalid")
 
@@ -505,7 +512,7 @@ class OrganizationAuthLoginTest(AuthProviderTestCase):
         """
         Given an existing authenticated user, and an updated identity (e.g.
         the ident changed from the SSO provider), we should be re-linking
-        the identity automatically as they dont have a password.
+        the identity automatically as they don't have a password.
 
         This is specifically testing an unauthenticated flow.
         """
@@ -533,7 +540,7 @@ class OrganizationAuthLoginTest(AuthProviderTestCase):
         """
         Given an existing authenticated user, and an updated identity (e.g.
         the ident changed from the SSO provider), we should be prompting to
-        confirm their identity as they dont have membership.
+        confirm their identity as they don't have membership.
         """
         auth_provider = AuthProvider.objects.create(
             organization=self.organization, provider="dummy"
@@ -652,3 +659,212 @@ class OrganizationAuthLoginTest(AuthProviderTestCase):
         # Ensure the ident was migrated from the legacy identity
         updated_ident = AuthIdentity.objects.get(id=user_ident.id)
         assert updated_ident.ident == "foo@new-domain.com"
+
+    @override_settings(SENTRY_SINGLE_ORGANIZATION=True)
+    @with_feature({"organizations:create": False})
+    def test_basic_auth_flow_as_invited_user(self):
+
+        user = self.create_user("foor@example.com")
+        self.create_member(organization=self.organization, user=user)
+        member = OrganizationMember.objects.get(organization=self.organization, user=user)
+        member.email = "foor@example.com"
+        member.user = None
+        member.save()
+
+        self.session["_next"] = reverse(
+            "sentry-organization-settings", args=[self.organization.slug]
+        )
+        self.save_session()
+
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+        assert resp.redirect_chain == [("/auth/login/", 302)]
+        assert resp.status_code == 403
+        self.assertTemplateUsed(resp, "sentry/no-organization-access.html")
+
+    def test_basic_auth_flow_as_invited_user_not_single_org_mode(self):
+        user = self.create_user("u2@example.com")
+        self.create_member(organization=self.organization, user=user)
+        member = OrganizationMember.objects.get(organization=self.organization, user=user)
+        member.email = "u2@example.com"
+        member.user = None
+        member.save()
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+        assert resp.redirect_chain == [("/auth/login/", 302), ("/organizations/new/", 302)]
+
+    @override_settings(SENTRY_SINGLE_ORGANIZATION=True)
+    @with_feature({"organizations:create": False})
+    def test_basic_auth_flow_as_user_with_confirmed_membership(self):
+        user = self.create_user("foor@example.com")
+        self.create_member(organization=self.organization, user=user)
+        member = OrganizationMember.objects.get(organization=self.organization, user=user)
+        member.email = "foor@example.com"
+        member.save()
+
+        self.session["_next"] = reverse(
+            "sentry-organization-settings", args=[self.organization.slug]
+        )
+        self.save_session()
+
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+        assert resp.redirect_chain == [
+            (reverse("sentry-organization-settings", args=[self.organization.slug]), 302),
+        ]
+
+    @override_settings(SENTRY_SINGLE_ORGANIZATION=True)
+    @with_feature({"organizations:create": False})
+    def test_flow_as_user_without_any_membership(self):
+        # not sure how this could happen on Single Org Mode
+        user = self.create_user("foor@example.com")
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+        assert resp.redirect_chain == [("/auth/login/", 302)]
+        assert resp.status_code == 403
+        self.assertTemplateUsed(resp, "sentry/no-organization-access.html")
+
+    def test_multiorg_login_correct_redirect_basic_auth(self):
+        user = self.create_user("bar@example.com")
+        user.update(is_superuser=False)
+
+        org1 = self.create_organization(name="bar", owner=user)
+        path = reverse("sentry-auth-organization", args=[org1.slug])
+        # create a second org that the user belongs to, ensure they are redirected to correct
+        self.create_organization(name="zap", owner=user)
+
+        self.client.get(path)
+        resp = self.client.post(
+            path,
+            {"username": user.username, "password": "admin", "op": "login"},
+            follow=True,
+        )
+        assert resp.redirect_chain == [
+            (reverse("sentry-login"), 302),
+            (f"/organizations/{org1.slug}/issues/", 302),
+        ]
+
+    def test_multiorg_login_correct_redirect_sso(self):
+        user = self.create_user("bar@example.com")
+        user.update(is_superuser=False)
+
+        org1 = self.create_organization(name="bar", owner=user)
+        path = reverse("sentry-auth-organization", args=[org1.slug])
+        # create a second org that the user belongs to, ensure they are redirected to correct
+        self.create_organization(name="zap", owner=user)
+
+        auth_provider = AuthProvider.objects.create(organization=org1, provider="dummy")
+        AuthIdentity.objects.create(auth_provider=auth_provider, user=user, ident="foo@example.com")
+
+        resp = self.client.post(path, {"init": True})
+
+        path = reverse("sentry-auth-sso")
+        resp = self.client.post(path, {"email": "foo@example.com"}, follow=True)
+        assert resp.redirect_chain == [
+            (reverse("sentry-login"), 302),
+            (f"/organizations/{org1.slug}/issues/", 302),
+        ]
+
+    @override_settings(SENTRY_SINGLE_ORGANIZATION=True)
+    @with_feature({"organizations:create": False})
+    def test_correct_redirect_as_2fa_user_single_org_invited(self):
+        user = self.create_user("foor@example.com")
+
+        RecoveryCodeInterface().enroll(user)
+        TotpInterface().enroll(user)
+
+        self.create_member(organization=self.organization, user=user)
+        member = OrganizationMember.objects.get(organization=self.organization, user=user)
+        member.email = "foor@example.com"
+        member.user = None
+        member.save()
+
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+
+        assert resp.redirect_chain == [("/auth/2fa/", 302)]
+
+    def test_correct_redirect_as_2fa_user_invited(self):
+        user = self.create_user("foor@example.com")
+
+        RecoveryCodeInterface().enroll(user)
+        TotpInterface().enroll(user)
+
+        self.create_member(organization=self.organization, user=user)
+        member = OrganizationMember.objects.get(organization=self.organization, user=user)
+        member.email = "foor@example.com"
+        member.user = None
+        member.save()
+
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+
+        assert resp.redirect_chain == [("/auth/2fa/", 302)]
+
+    @override_settings(SENTRY_SINGLE_ORGANIZATION=True)
+    @with_feature({"organizations:create": False})
+    def test_correct_redirect_as_2fa_user_single_org_no_membership(self):
+        user = self.create_user("foor@example.com")
+
+        RecoveryCodeInterface().enroll(user)
+        TotpInterface().enroll(user)
+
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+
+        assert resp.redirect_chain == [("/auth/2fa/", 302)]
+
+    def test_correct_redirect_as_2fa_user_no_membership(self):
+        user = self.create_user("foor@example.com")
+
+        RecoveryCodeInterface().enroll(user)
+        TotpInterface().enroll(user)
+
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+
+        assert resp.redirect_chain == [("/auth/2fa/", 302)]
+
+    @override_settings(SENTRY_SINGLE_ORGANIZATION=True)
+    @with_feature({"organizations:create": False})
+    def test_correct_redirect_as_2fa_user_single_org_member(self):
+        user = self.create_user("foor@example.com")
+
+        RecoveryCodeInterface().enroll(user)
+        TotpInterface().enroll(user)
+
+        self.create_member(organization=self.organization, user=user)
+        member = OrganizationMember.objects.get(organization=self.organization, user=user)
+        member.email = "foor@example.com"
+        member.save()
+
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+
+        assert resp.redirect_chain == [("/auth/2fa/", 302)]
+
+    def test_correct_redirect_as_2fa_user_invited_member(self):
+        user = self.create_user("foor@example.com")
+
+        RecoveryCodeInterface().enroll(user)
+        TotpInterface().enroll(user)
+
+        self.create_member(organization=self.organization, user=user)
+        member = OrganizationMember.objects.get(organization=self.organization, user=user)
+        member.email = "foor@example.com"
+        member.save()
+
+        resp = self.client.post(
+            self.path, {"username": user, "password": "admin", "op": "login"}, follow=True
+        )
+
+        assert resp.redirect_chain == [("/auth/2fa/", 302)]

@@ -1,17 +1,16 @@
 from collections import namedtuple
-import sentry_sdk
-
 from datetime import datetime, timedelta
-from rest_framework.response import Response
+
+import sentry_sdk
 from rest_framework.exceptions import ParseError
+from rest_framework.response import Response
 
 from sentry import features
-from sentry.api.bases import OrganizationEventsV2EndpointBase, NoProjects
-from sentry.api.event_search import DateArg, parse_function
+from sentry.api.bases import NoProjects, OrganizationEventsV2EndpointBase
 from sentry.api.paginator import GenericOffsetPaginator
-from sentry.search.utils import parse_datetime_string, InvalidQuery
+from sentry.search.events.fields import DateArg, parse_function
+from sentry.search.utils import InvalidQuery, parse_datetime_string
 from sentry.snuba import discover
-
 
 # converter is to convert the aggregate filter to snuba query
 Alias = namedtuple("Alias", "converter aggregate")
@@ -75,11 +74,24 @@ class OrganizationEventsTrendsEndpointBase(OrganizationEventsV2EndpointBase):
                 ],
                 ["minus", "transaction.duration"],
             ),
+            # TODO(wmak): remove this once we don't use this on the frontend
             "t_test()": Alias(
                 lambda aggregate_filter: [
                     "t_test",
                     aggregate_filter.operator,
                     aggregate_filter.value.value,
+                ],
+                None,
+            ),
+            "confidence()": Alias(
+                lambda aggregate_filter: [
+                    "t_test",
+                    CORRESPONDENCE_MAP[aggregate_filter.operator]
+                    if trend_type == REGRESSION
+                    else aggregate_filter.operator,
+                    -1 * aggregate_filter.value.value
+                    if trend_type == IMPROVED
+                    else aggregate_filter.value.value,
                 ],
                 None,
             ),
@@ -94,7 +106,7 @@ class OrganizationEventsTrendsEndpointBase(OrganizationEventsV2EndpointBase):
         }
 
     def get_trend_columns(self, baseline_function, column, middle):
-        """ Construct the columns needed to calculate high confidence trends """
+        """Construct the columns needed to calculate high confidence trends"""
         trend_column = self.trend_columns.get(baseline_function)
         if trend_column is None:
             raise ParseError(detail=f"{baseline_function} is not a supported trend function")
@@ -208,7 +220,7 @@ class OrganizationEventsTrendsEndpointBase(OrganizationEventsV2EndpointBase):
 
         trend_columns = self.get_trend_columns(function, column, middle)
 
-        selected_columns = request.GET.getlist("field")[:]
+        selected_columns = self.get_field_list(organization, request)
         orderby = self.get_orderby(request)
 
         query = request.GET.get("query")

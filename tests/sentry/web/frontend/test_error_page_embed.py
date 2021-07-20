@@ -1,12 +1,13 @@
-from django.core.urlresolvers import reverse
-from django.test import override_settings
+import logging
 from urllib.parse import quote, urlencode
 from uuid import uuid4
-import logging
+
+from django.test import override_settings
+from django.urls import reverse
 
 from sentry.models import Environment, UserReport
 from sentry.testutils import TestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.testutils.helpers.datetime import before_now, iso_format
 
 
 @override_settings(ROOT_URLCONF="sentry.conf.urls")
@@ -25,44 +26,39 @@ class ErrorPageEmbedTest(TestCase):
         )
 
     def test_invalid_referer(self):
-        with self.settings(SENTRY_ALLOW_ORIGIN=None):
-            resp = self.client.get(self.path_with_qs, HTTP_REFERER="http://foo.com")
+        resp = self.client.get(self.path_with_qs, HTTP_REFERER="http://foo.com")
         assert resp.status_code == 403, resp.content
         assert resp["Content-Type"] == "application/json"
 
     def test_invalid_origin(self):
-        with self.settings(SENTRY_ALLOW_ORIGIN=None):
-            resp = self.client.get(self.path_with_qs, HTTP_ORIGIN="http://foo.com")
+        resp = self.client.get(self.path_with_qs, HTTP_ORIGIN="http://foo.com")
         assert resp.status_code == 403, resp.content
         assert resp["Content-Type"] == "application/json"
 
     def test_invalid_origin_respects_accept(self):
-        with self.settings(SENTRY_ALLOW_ORIGIN=None):
-            resp = self.client.get(
-                self.path_with_qs,
-                HTTP_ORIGIN="http://foo.com",
-                HTTP_ACCEPT="text/html, text/javascript",
-            )
+        resp = self.client.get(
+            self.path_with_qs,
+            HTTP_ORIGIN="http://foo.com",
+            HTTP_ACCEPT="text/html, text/javascript",
+        )
         assert resp.status_code == 403, resp.content
         assert resp["Content-Type"] == "text/javascript"
 
     def test_missing_eventId(self):
-        path = "{}?dsn={}".format(self.path, quote(self.key.dsn_public))
-        with self.settings(SENTRY_ALLOW_ORIGIN="*"):
-            resp = self.client.get(
-                path, HTTP_REFERER="http://example.com", HTTP_ACCEPT="text/html, text/javascript"
-            )
+        path = f"{self.path}?dsn={quote(self.key.dsn_public)}"
+        resp = self.client.get(
+            path, HTTP_REFERER="http://example.com", HTTP_ACCEPT="text/html, text/javascript"
+        )
         assert resp.status_code == 400, resp.content
         assert resp["Content-Type"] == "text/javascript"
         assert resp["X-Sentry-Context"] == '{"eventId":"Missing or invalid parameter."}'
         assert resp.content == b""
 
     def test_missing_dsn(self):
-        path = "{}?eventId={}".format(self.path, quote(self.event_id))
-        with self.settings(SENTRY_ALLOW_ORIGIN="*"):
-            resp = self.client.get(
-                path, HTTP_REFERER="http://example.com", HTTP_ACCEPT="text/html, text/javascript"
-            )
+        path = f"{self.path}?eventId={quote(self.event_id)}"
+        resp = self.client.get(
+            path, HTTP_REFERER="http://example.com", HTTP_ACCEPT="text/html, text/javascript"
+        )
         assert resp.status_code == 404, resp.content
         assert resp["Content-Type"] == "text/javascript"
         assert resp["X-Sentry-Context"] == '{"dsn":"Missing or invalid parameter."}'

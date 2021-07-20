@@ -1,6 +1,5 @@
 from sentry.grouping.utils import hash_from_values
 
-
 DEFAULT_HINTS = {"salt": "a static salt"}
 
 # When a component ID appears here it has a human readable name which also
@@ -25,6 +24,12 @@ def _calculate_contributes(values):
     return False
 
 
+def calculate_tree_label(values):
+    for value in values or ():
+        if isinstance(value, GroupingComponent) and value.contributes and value.tree_label:
+            return value.tree_label
+
+
 class GroupingComponent:
     """A grouping component is a recursive structure that is flattened
     into components to make a hash for grouping purposes.
@@ -40,6 +45,9 @@ class GroupingComponent:
         variant_provider=False,
         similarity_encoder=None,
         similarity_self_encoder=None,
+        tree_label=None,
+        is_prefix_frame=None,
+        is_sentinel_frame=None,
     ):
         self.id = id
 
@@ -49,12 +57,18 @@ class GroupingComponent:
         self.contributes_to_similarity = None
         self.variant_provider = variant_provider
         self.values = []
+        self.tree_label = None
+        self.is_prefix_frame = False
+        self.is_sentinel_frame = False
 
         self.update(
             hint=hint,
             contributes=contributes,
             contributes_to_similarity=contributes_to_similarity,
             values=values,
+            tree_label=tree_label,
+            is_prefix_frame=is_prefix_frame,
+            is_sentinel_frame=is_sentinel_frame,
         )
 
         self.similarity_encoder = similarity_encoder
@@ -97,15 +111,28 @@ class GroupingComponent:
                 if value.id == id:
                     yield value
                 if recursive:
-                    yield from value.iter_subcomponents(id, recursive=True)
+                    yield from value.iter_subcomponents(
+                        id, recursive=True, only_contributing=only_contributing
+                    )
 
-    def update(self, hint=None, contributes=None, contributes_to_similarity=None, values=None):
+    def update(
+        self,
+        hint=None,
+        contributes=None,
+        contributes_to_similarity=None,
+        values=None,
+        tree_label=None,
+        is_prefix_frame=None,
+        is_sentinel_frame=None,
+    ):
         """Updates an already existing component with new values."""
         if hint is not None:
             self.hint = hint
         if values is not None:
             if contributes is None:
                 contributes = _calculate_contributes(values)
+            if tree_label is None:
+                tree_label = calculate_tree_label(values)
             self.values = values
         if contributes is not None:
             if contributes_to_similarity is None:
@@ -113,6 +140,12 @@ class GroupingComponent:
             self.contributes = contributes
         if contributes_to_similarity is not None:
             self.contributes_to_similarity = contributes_to_similarity
+        if self.contributes and tree_label is not None:
+            self.tree_label = tree_label
+        if is_prefix_frame is not None:
+            self.is_prefix_frame = is_prefix_frame
+        if is_sentinel_frame is not None:
+            self.is_sentinel_frame = is_sentinel_frame
 
     def shallow_copy(self):
         """Creates a shallow copy."""

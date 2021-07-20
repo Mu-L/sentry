@@ -1,8 +1,8 @@
 from django.db import transaction
 from django.views.decorators.cache import never_cache
 
-from sentry.web.frontend.base import BaseView
 from sentry.utils import auth
+from sentry.web.frontend.base import BaseView
 
 
 class ReactivateAccountView(BaseView):
@@ -12,7 +12,7 @@ class ReactivateAccountView(BaseView):
     @never_cache
     @transaction.atomic
     def handle(self, request):
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return self.handle_auth_required(request)
 
         if request.POST.get("op") == "confirm":

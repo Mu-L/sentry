@@ -1,13 +1,13 @@
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models.alert_rule import (
-    DetailedAlertRuleSerializer,
     CombinedRuleSerializer,
+    DetailedAlertRuleSerializer,
 )
-from sentry.models import Rule
 from sentry.incidents.logic import create_alert_rule_trigger
-from sentry.incidents.models import AlertRuleThresholdType, AlertRule
+from sentry.incidents.models import AlertRule, AlertRuleThresholdType
+from sentry.models import Rule
 from sentry.snuba.models import SnubaQueryEventType
-from sentry.testutils import TestCase, APITestCase
+from sentry.testutils import APITestCase, TestCase
 
 
 class BaseAlertRuleSerializerTest:
@@ -46,12 +46,18 @@ class BaseAlertRuleSerializerTest:
         else:
             assert result["environment"] is None
 
+        if alert_rule.owner:
+            assert result["owner"] == alert_rule.owner.get_actor_identifier()
+        else:
+            assert result["owner"] is None
+
     def create_issue_alert_rule(self, data):
         """data format
         {
             "project": project
             "environment": environment
             "name": "My rule name",
+            "owner": actor id,
             "conditions": [],
             "actions": [],
             "actionMatch": "all"
@@ -74,6 +80,8 @@ class BaseAlertRuleSerializerTest:
             rule.data["frequency"] = data["frequency"]
         if data.get("date_added"):
             rule.date_added = data["date_added"]
+        if data.get("owner"):
+            rule.owner = data["owner"]
 
         rule.save()
         return rule
@@ -112,6 +120,15 @@ class AlertRuleSerializerTest(BaseAlertRuleSerializerTest, TestCase):
         self.assert_alert_rule_serialized(alert_rule, result)
         assert alert_rule.created_by == user
 
+    def test_owner(self):
+        user = self.create_user("foo@example.com")
+        alert_rule = self.create_alert_rule(
+            environment=self.environment, user=user, owner=self.team.actor.get_actor_tuple()
+        )
+        result = serialize(alert_rule)
+        self.assert_alert_rule_serialized(alert_rule, result)
+        assert alert_rule.owner == self.team.actor
+
 
 class DetailedAlertRuleSerializerTest(BaseAlertRuleSerializerTest, TestCase):
     def test_simple(self):
@@ -119,7 +136,7 @@ class DetailedAlertRuleSerializerTest(BaseAlertRuleSerializerTest, TestCase):
         alert_rule = self.create_alert_rule(projects=projects)
         result = serialize(alert_rule, serializer=DetailedAlertRuleSerializer())
         self.assert_alert_rule_serialized(alert_rule, result)
-        assert sorted(result["projects"]) == sorted([p.slug for p in projects])
+        assert sorted(result["projects"]) == sorted(p.slug for p in projects)
         assert result["excludedProjects"] == []
         assert result["eventTypes"] == [SnubaQueryEventType.EventType.ERROR.name.lower()]
 

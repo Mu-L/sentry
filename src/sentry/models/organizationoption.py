@@ -1,10 +1,10 @@
 from django.db import models
 
-from sentry.db.models import Model, FlexibleForeignKey, sane_repr
+from sentry.db.models import FlexibleForeignKey, Model, sane_repr
 from sentry.db.models.fields import EncryptedPickledObjectField
 from sentry.db.models.manager import OptionManager
-from sentry.utils.cache import cache
 from sentry.tasks.relay import schedule_update_config_cache
+from sentry.utils.cache import cache
 
 
 class OrganizationOptionManager(OptionManager):
@@ -77,7 +77,7 @@ class OrganizationOption(Model):
     value: { updated: datetime }
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     organization = FlexibleForeignKey("sentry.Organization")
     key = models.CharField(max_length=64)

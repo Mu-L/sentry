@@ -2,6 +2,8 @@ from sentry.models import (
     Commit,
     CommitAuthor,
     Dashboard,
+    DashboardWidget,
+    DashboardWidgetQuery,
     Environment,
     ExternalIssue,
     Organization,
@@ -11,8 +13,6 @@ from sentry.models import (
     ReleaseEnvironment,
     Repository,
     ScheduledDeletion,
-    DashboardWidget,
-    DashboardWidgetQuery,
 )
 from sentry.tasks.deletion import run_deletion
 from sentry.testutils import TestCase
@@ -64,7 +64,7 @@ class DeleteOrganizationTest(TestCase):
             widget=widget_2, order=1, name="Incoming data"
         )
         widget_2_data_2 = DashboardWidgetQuery.objects.create(
-            widget=widget_2, order=2, name="Outcoming data"
+            widget=widget_2, order=2, name="Outgoing data"
         )
 
         deletion = ScheduledDeletion.schedule(org, days=0)

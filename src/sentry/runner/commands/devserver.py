@@ -1,7 +1,8 @@
-import click
+import threading
 import types
 from urllib.parse import urlparse
-import threading
+
+import click
 
 from sentry.runner.decorators import configuration, log_options
 
@@ -113,6 +114,7 @@ def devserver(
     os.environ["NODE_ENV"] = "production" if environment.startswith("prod") else environment
 
     from django.conf import settings
+
     from sentry import options
     from sentry.services.http import SentryHTTPServer
 
@@ -181,6 +183,7 @@ def devserver(
         uwsgi_overrides["protocol"] = "http"
 
         os.environ["FORCE_WEBPACK_DEV_SERVER"] = "1"
+        os.environ["SENTRY_WEBPACK_PROXY_HOST"] = "%s" % host
         os.environ["SENTRY_WEBPACK_PROXY_PORT"] = "%s" % proxy_port
         os.environ["SENTRY_BACKEND_PORT"] = "%s" % port
 
@@ -188,14 +191,6 @@ def devserver(
         os.environ["NODE_OPTIONS"] = (
             os.environ.get("NODE_OPTIONS", "") + " --max-old-space-size=4096"
         ).lstrip()
-
-        # Replace the webpack watcher with the drop-in webpack-dev-server
-        webpack_config = next(w for w in daemons if w[0] == "webpack")[1]
-        webpack_config[0] = os.path.join(
-            *os.path.split(webpack_config[0])[0:-1] + ("webpack-dev-server",)
-        )
-
-        daemons = [w for w in daemons if w[0] != "webpack"] + [("webpack", webpack_config)]
     else:
         # If we are the bare http server, use the http option with uwsgi protocol
         # See https://uwsgi-docs.readthedocs.io/en/latest/HTTP.html
@@ -223,6 +218,9 @@ def devserver(
         if eventstream.requires_post_process_forwarder():
             daemons += [_get_daemon("post-process-forwarder")]
 
+        if settings.SENTRY_EXTRA_WORKERS:
+            daemons.extend([_get_daemon(name) for name in settings.SENTRY_EXTRA_WORKERS])
+
         if settings.SENTRY_DEV_PROCESS_SUBSCRIPTIONS:
             if not settings.SENTRY_EVENTSTREAM == "sentry.eventstream.kafka.KafkaEventStream":
                 raise click.ClickException(
@@ -234,9 +232,6 @@ def devserver(
 
     if settings.SENTRY_USE_RELAY:
         daemons += [_get_daemon("ingest")]
-
-    if settings.SENTRY_EXTRA_WORKERS:
-        daemons.extend([_get_daemon(name) for name in settings.SENTRY_EXTRA_WORKERS])
 
     if needs_https and has_https:
         https_port = str(parsed_url.port)
@@ -280,6 +275,7 @@ def devserver(
 
     import sys
     from subprocess import list2cmdline
+
     from honcho.manager import Manager
     from honcho.printer import Printer
 

@@ -1,9 +1,15 @@
 from datetime import timedelta
-import pytest
 
+import pytest
 from django.utils import timezone
 
-from sentry.models import Environment, EventUser, ReleaseProjectEnvironment, Release
+from sentry.models import Environment, EventUser, Release, ReleaseProjectEnvironment
+from sentry.search.events.constants import (
+    RELEASE_STAGE_ALIAS,
+    SEMVER_ALIAS,
+    SEMVER_BUILD_ALIAS,
+    SEMVER_PACKAGE_ALIAS,
+)
 from sentry.tagstore.exceptions import (
     GroupTagKeyNotFound,
     GroupTagValueNotFound,
@@ -11,6 +17,7 @@ from sentry.tagstore.exceptions import (
     TagValueNotFound,
 )
 from sentry.tagstore.snuba.backend import SnubaTagStorage
+from sentry.tagstore.types import TagValue
 from sentry.testutils import SnubaTestCase, TestCase
 from sentry.testutils.helpers.datetime import iso_format
 
@@ -322,26 +329,6 @@ class TagStorageTest(TestCase, SnubaTestCase):
             == {}
         )
 
-    def test_get_releases(self):
-        assert (
-            self.ts.get_first_release(project_id=self.proj1.id, group_id=self.proj1group1.id)
-            == "200"
-        )
-
-        assert (
-            self.ts.get_first_release(project_id=self.proj1.id, group_id=self.proj1group2.id)
-            is None
-        )
-
-        assert (
-            self.ts.get_last_release(project_id=self.proj1.id, group_id=self.proj1group1.id)
-            == "100"
-        )
-
-        assert (
-            self.ts.get_last_release(project_id=self.proj1.id, group_id=self.proj1group2.id) is None
-        )
-
     def test_get_group_ids_for_users(self):
         assert self.ts.get_group_ids_for_users(
             [self.proj1.id], [EventUser(project_id=self.proj1.id, ident="user1")]
@@ -375,7 +362,9 @@ class TagStorageTest(TestCase, SnubaTestCase):
         assert result[0].last_seen == self.now - timedelta(seconds=2)
 
     def test_get_release_tags(self):
-        tags = list(self.ts.get_release_tags([self.proj1.id], None, ["100"]))
+        tags = list(
+            self.ts.get_release_tags(self.proj1.organization_id, [self.proj1.id], None, ["100"])
+        )
 
         assert len(tags) == 1
         one_second_ago = self.now - timedelta(seconds=1)
@@ -385,7 +374,9 @@ class TagStorageTest(TestCase, SnubaTestCase):
         assert tags[0].key == "sentry:release"
 
     def test_get_release_tags_uses_release_project_environment(self):
-        tags = list(self.ts.get_release_tags([self.proj1.id], None, ["100"]))
+        tags = list(
+            self.ts.get_release_tags(self.proj1.organization_id, [self.proj1.id], None, ["100"])
+        )
 
         assert len(tags) == 1
         one_second_ago = self.now - timedelta(seconds=1)
@@ -409,6 +400,15 @@ class TagStorageTest(TestCase, SnubaTestCase):
             },
             project_id=self.proj1.id,
         )
+
+        release = Release.objects.create(version="100", organization=self.organization)
+        ReleaseProjectEnvironment.objects.create(
+            release_id=release.id,
+            project_id=self.proj1.id,
+            environment_id=self.env3.id,
+            first_seen=one_day_ago,
+        )
+
         self.store_event(
             data={
                 "event_id": "6" * 32,
@@ -423,20 +423,9 @@ class TagStorageTest(TestCase, SnubaTestCase):
             },
             project_id=self.proj1.id,
         )
-
-        tags = list(self.ts.get_release_tags([self.proj1.id], None, ["100"]))
-        assert tags[0].last_seen == one_second_ago
-        assert tags[0].first_seen == two_days_ago
-        assert tags[0].times_seen == 3
-
-        release = Release.objects.create(version="100", organization=self.organization)
-        ReleaseProjectEnvironment.objects.create(
-            release_id=release.id,
-            project_id=self.proj1.id,
-            environment_id=self.env3.id,
-            first_seen=one_day_ago,
+        tags = list(
+            self.ts.get_release_tags(self.proj1.organization_id, [self.proj1.id], None, ["100"])
         )
-        tags = list(self.ts.get_release_tags([self.proj1.id], None, ["100"]))
         assert tags[0].last_seen == one_second_ago
         assert tags[0].first_seen == one_day_ago
         assert (
@@ -699,3 +688,223 @@ class TagStorageTest(TestCase, SnubaTestCase):
             )
             == {}
         )
+
+
+class BaseSemverTest:
+    KEY = None
+
+    def setUp(self):
+        super().setUp()
+        self.ts = SnubaTagStorage()
+
+    def run_test(self, query, expected_versions, environment=None, project=None):
+        if project is None:
+            project = self.project
+        assert list(
+            self.ts.get_tag_value_paginator(
+                project.id,
+                environment.id if environment else None,
+                self.KEY,
+                query=query,
+            ).get_result(10)
+        ) == [
+            TagValue(
+                key=self.KEY,
+                value=v,
+                times_seen=None,
+                first_seen=None,
+                last_seen=None,
+            )
+            for v in expected_versions
+        ]
+
+
+class GetTagValuePaginatorForProjectsSemverTest(BaseSemverTest, TestCase, SnubaTestCase):
+    KEY = SEMVER_ALIAS
+
+    def test_semver(self):
+        env_2 = self.create_environment()
+        project_2 = self.create_project()
+        self.create_release(version="test@1.0.0.0+123", additional_projects=[project_2])
+        self.create_release(version="test@1.2.0.0-alpha", environments=[self.environment])
+        self.create_release(version="test@1.2.3.0-beta+789", environments=[env_2])
+        self.create_release(version="test@1.2.3.4", environments=[env_2])
+        self.create_release(version="test2@2.0.0.0+456", environments=[self.environment, env_2])
+        self.create_release(version="z_test@1.0.0.0")
+        self.create_release(version="z_test@2.0.0.0+456", additional_projects=[project_2])
+
+        self.run_test(
+            None,
+            [
+                "z_test@2.0.0.0",
+                "test2@2.0.0.0",
+                "test@1.2.3.4",
+                "test@1.2.3.0-beta",
+                "test@1.2.0.0-alpha",
+                "z_test@1.0.0.0",
+                "test@1.0.0.0",
+            ],
+        )
+        self.run_test(
+            "",
+            [
+                "z_test@2.0.0.0",
+                "test2@2.0.0.0",
+                "test@1.2.3.4",
+                "test@1.2.3.0-beta",
+                "test@1.2.0.0-alpha",
+                "z_test@1.0.0.0",
+                "test@1.0.0.0",
+            ],
+        )
+
+        # These should all be equivalent
+        self.run_test("1", ["1.2.3.4", "1.2.3.0-beta", "1.2.0.0-alpha", "1.0.0.0"])
+        self.run_test("1.", ["1.2.3.4", "1.2.3.0-beta", "1.2.0.0-alpha", "1.0.0.0"])
+        self.run_test("1.*", ["1.2.3.4", "1.2.3.0-beta", "1.2.0.0-alpha", "1.0.0.0"])
+
+        self.run_test("1.*", ["1.0.0.0"], project=project_2)
+
+        self.run_test("1.2", ["1.2.3.4", "1.2.3.0-beta", "1.2.0.0-alpha"])
+
+        self.run_test("", ["test2@2.0.0.0", "test@1.2.0.0-alpha"], self.environment)
+        self.run_test("", ["test2@2.0.0.0", "test@1.2.3.4", "test@1.2.3.0-beta"], env_2)
+        self.run_test("1", ["1.2.0.0-alpha"], self.environment)
+        self.run_test("1", ["1.2.3.4", "1.2.3.0-beta"], env_2)
+
+        # Test packages handling
+
+        self.run_test(
+            "test",
+            [
+                "test2@2.0.0.0",
+                "test@1.2.3.4",
+                "test@1.2.3.0-beta",
+                "test@1.2.0.0-alpha",
+                "test@1.0.0.0",
+            ],
+        )
+        self.run_test("test", ["test@1.0.0.0"], project=project_2)
+        self.run_test("test2", ["test2@2.0.0.0"])
+        self.run_test("z", ["z_test@2.0.0.0", "z_test@1.0.0.0"])
+        self.run_test("z", ["z_test@2.0.0.0"], project=project_2)
+
+        self.run_test(
+            "test@", ["test@1.2.3.4", "test@1.2.3.0-beta", "test@1.2.0.0-alpha", "test@1.0.0.0"]
+        )
+        self.run_test(
+            "test@*", ["test@1.2.3.4", "test@1.2.3.0-beta", "test@1.2.0.0-alpha", "test@1.0.0.0"]
+        )
+        self.run_test("test@1.2", ["test@1.2.3.4", "test@1.2.3.0-beta", "test@1.2.0.0-alpha"])
+
+
+class GetTagValuePaginatorForProjectsSemverPackageTest(BaseSemverTest, TestCase, SnubaTestCase):
+    KEY = SEMVER_PACKAGE_ALIAS
+
+    def test_semver_package(self):
+        env_2 = self.create_environment()
+        project_2 = self.create_project()
+        self.create_release(version="test@1.0.0.0+123", additional_projects=[project_2])
+        self.create_release(version="test@1.2.0.0-alpha", environments=[self.environment])
+        self.create_release(version="test2@2.0.0.0+456", environments=[self.environment, env_2])
+        self.create_release(version="z_test@2.0.0.0+456", additional_projects=[project_2])
+
+        self.run_test(None, ["test", "test2", "z_test"])
+        self.run_test("", ["test", "test2", "z_test"])
+
+        self.run_test("t", ["test", "test2"])
+        self.run_test("test", ["test", "test2"])
+        self.run_test("test2", ["test2"])
+        self.run_test("z", ["z_test"])
+
+        self.run_test("", ["test", "z_test"], project=project_2)
+
+        self.run_test("", ["test", "test2"], self.environment)
+        self.run_test("", ["test2"], env_2)
+
+
+class GetTagValuePaginatorForProjectsReleaseStageTest(TestCase, SnubaTestCase):
+    def setUp(self):
+        super().setUp()
+        self.ts = SnubaTagStorage()
+
+    def run_test(self, query, expected_releases, environment=None, project=None):
+        if project is None:
+            project = self.project
+        assert list(
+            self.ts.get_tag_value_paginator(
+                project.id,
+                environment.id if environment else None,
+                RELEASE_STAGE_ALIAS,
+                query=query,
+            ).get_result(10)
+        ) == [
+            TagValue(
+                key=RELEASE_STAGE_ALIAS,
+                value=r.version,
+                times_seen=None,
+                first_seen=None,
+                last_seen=None,
+            )
+            for r in expected_releases
+        ]
+
+    def test_release_stage(self):
+        replaced_release = self.create_release(version="replaced_release")
+        adopted_release = self.create_release(version="adopted_release")
+        not_adopted_release = self.create_release(version="not_adopted_release")
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=adopted_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=replaced_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+            unadopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=not_adopted_release.id,
+            environment_id=self.environment.id,
+        )
+
+        env_2 = self.create_environment()
+        project_2 = self.create_project()
+
+        self.run_test("adopted", [adopted_release])
+        self.run_test("not_adopted", [not_adopted_release])
+        self.run_test("replaced", [replaced_release])
+
+        self.run_test("adopted", [], environment=env_2)
+        self.run_test("adopted", [], project=project_2)
+
+
+class GetTagValuePaginatorForProjectsSemverBuildTest(BaseSemverTest, TestCase, SnubaTestCase):
+    KEY = SEMVER_BUILD_ALIAS
+
+    def test_semver_package(self):
+        env_2 = self.create_environment()
+        project_2 = self.create_project()
+        self.create_release(version="test@1.0.0.0+123", additional_projects=[project_2])
+        self.create_release(version="test@1.0.0.0+456")
+        self.create_release(version="test@1.2.0.0", environments=[self.environment])
+        self.create_release(version="test@1.2.1.0+124", environments=[self.environment])
+        self.create_release(version="test@2.0.0.0+456", environments=[self.environment, env_2])
+        self.create_release(version="test@2.0.1.0+457a", additional_projects=[project_2])
+        self.create_release(version="test@2.0.1.0+789", additional_projects=[project_2])
+
+        self.run_test(None, ["123", "124", "456", "457a", "789"])
+        self.run_test("", ["123", "124", "456", "457a", "789"])
+
+        self.run_test("1", ["123", "124"])
+        self.run_test("123", ["123"])
+        self.run_test("4", ["456", "457a"])
+
+        self.run_test("1", ["123"], project=project_2)
+        self.run_test("1", ["124"], self.environment)
+        self.run_test("4", ["456", "457a"])
+        self.run_test("4", ["456"], env_2)

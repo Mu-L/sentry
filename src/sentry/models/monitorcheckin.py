@@ -2,11 +2,11 @@ from django.db import models
 from django.utils import timezone
 
 from sentry.db.models import (
-    Model,
     BaseManager,
     BoundedPositiveIntegerField,
     EncryptedJsonField,
     FlexibleForeignKey,
+    Model,
     UUIDField,
     sane_repr,
 )
@@ -31,7 +31,7 @@ class CheckInStatus:
 
 
 class MonitorCheckIn(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     guid = UUIDField(unique=True, auto_add=True)
     project_id = BoundedPositiveIntegerField(db_index=True)

@@ -1,6 +1,4 @@
-import React from 'react';
-
-import {mount, mountWithTheme} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {NumberField} from 'app/components/forms';
 import Form from 'app/components/forms/form';
@@ -23,21 +21,16 @@ describe('NumberField', function () {
     });
 
     it('renders with form context', function () {
-      const wrapper = mountWithTheme(<NumberField name="fieldName" />, {
-        context: {
-          form: {
-            data: {
-              fieldName: 5,
-            },
-            errors: {},
-          },
-        },
-      });
+      const wrapper = mountWithTheme(
+        <Form initialData={{fieldName: 5}}>
+          <NumberField name="fieldName" />
+        </Form>
+      );
       expect(wrapper).toSnapshot();
     });
 
     it('doesnt save `NaN` when new value is empty string', function () {
-      const wrapper = mount(
+      const wrapper = mountWithTheme(
         <Form onSubmit={() => {}}>
           <NumberField name="fieldName" defaultValue="2" />
         </Form>

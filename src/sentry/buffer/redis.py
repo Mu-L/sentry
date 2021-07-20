@@ -1,8 +1,8 @@
 import pickle
 import threading
+from datetime import datetime
 from time import time
 
-from datetime import datetime
 from django.db import models
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_text
@@ -74,12 +74,10 @@ class RedisBuffer(Buffer):
         """
         Returns a Redis-compatible key for the model given filters.
         """
-        return "b:k:{}:{}".format(
-            model._meta,
-            md5_text(
-                "&".join("{}={}".format(k, self._coerce_val(v)) for k, v in sorted(filters.items()))
-            ).hexdigest(),
-        )
+        md5 = md5_text(
+            "&".join(f"{k}={self._coerce_val(v)}" for k, v in sorted(filters.items()))
+        ).hexdigest()
+        return f"b:k:{model._meta}:{md5}"
 
     def _make_pending_key(self, partition=None):
         """

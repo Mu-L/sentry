@@ -1,9 +1,11 @@
 from django.db.models import Q
+from django.db.models.query import EmptyQuerySet
+from rest_framework.exceptions import AuthenticationFailed
 
 from sentry.api.base import Endpoint
 from sentry.api.bases.project import ProjectPermission
 from sentry.api.paginator import DateTimePaginator
-from sentry.api.serializers import serialize, ProjectWithOrganizationSerializer
+from sentry.api.serializers import ProjectWithOrganizationSerializer, serialize
 from sentry.auth.superuser import is_active_superuser
 from sentry.db.models.query import in_iexact
 from sentry.models import Project, ProjectPlatform, ProjectStatus, SentryAppInstallationToken
@@ -33,7 +35,7 @@ class ProjectIndexEndpoint(Endpoint):
         elif status:
             queryset = queryset.none()
 
-        if request.auth and not request.user.is_authenticated():
+        if request.auth and not request.user.is_authenticated:
             if hasattr(request.auth, "project"):
                 queryset = queryset.filter(id=request.auth.project_id)
             elif request.auth.organization is not None:
@@ -43,6 +45,8 @@ class ProjectIndexEndpoint(Endpoint):
         elif not (is_active_superuser(request) and request.GET.get("show") == "all"):
             if request.user.is_sentry_app:
                 queryset = SentryAppInstallationToken.get_projects(request.auth)
+                if isinstance(queryset, EmptyQuerySet):
+                    raise AuthenticationFailed("Token not found")
             else:
                 queryset = queryset.filter(teams__organizationmember__user=request.user)
 

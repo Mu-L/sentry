@@ -22,9 +22,8 @@ from sentry.incidents.models import (
 )
 from sentry.incidents.tasks import INCIDENTS_SNUBA_SUBSCRIPTION_TYPE
 from sentry.snuba.query_subscription_consumer import QuerySubscriptionConsumer, subscriber_registry
-from sentry.utils import json
-
 from sentry.testutils import TestCase
+from sentry.utils import json
 
 
 @freeze_time()
@@ -94,16 +93,7 @@ class HandleSnubaQueryUpdateTest(TestCase):
         # Full integration test to ensure that when a subscription receives an update
         # the `QuerySubscriptionConsumer` successfully retries the subscription and
         # calls the correct callback, which should result in an incident being created.
-        callback = subscriber_registry[INCIDENTS_SNUBA_SUBSCRIPTION_TYPE]
 
-        def exception_callback(*args, **kwargs):
-            # We want to just error after the callback so that we can see the result of
-            # processing. This means the offset won't be committed, but that's fine, we
-            # can still check the results.
-            callback(*args, **kwargs)
-            raise KeyboardInterrupt()
-
-        subscriber_registry[INCIDENTS_SNUBA_SUBSCRIPTION_TYPE] = exception_callback
         message = {
             "version": 1,
             "payload": {
@@ -121,6 +111,17 @@ class HandleSnubaQueryUpdateTest(TestCase):
             ).exclude(status=IncidentStatus.CLOSED.value)
 
         consumer = QuerySubscriptionConsumer("hi", topic=self.topic)
+
+        original_callback = subscriber_registry[INCIDENTS_SNUBA_SUBSCRIPTION_TYPE]
+
+        def shutdown_callback(*args, **kwargs):
+            # We want to just exit after the callback so that we can see the result of
+            # processing.
+            original_callback(*args, **kwargs)
+            consumer.shutdown()
+
+        subscriber_registry[INCIDENTS_SNUBA_SUBSCRIPTION_TYPE] = shutdown_callback
+
         with self.feature(["organizations:incidents", "organizations:performance-view"]):
             with self.assertChanges(
                 lambda: active_incident().exists(), before=False, after=True

@@ -2,11 +2,16 @@ import logging
 import math
 import re
 import warnings
-from collections import namedtuple
-from enum import Enum
+from collections import defaultdict, namedtuple
 from datetime import timedelta
+from enum import Enum
+from functools import reduce
+from operator import or_
+from typing import List, Mapping, Optional, Set
 
+from django.core.cache import cache
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.http import urlencode, urlquote
 from django.utils.translation import ugettext_lazy as _
@@ -23,6 +28,7 @@ from sentry.db.models import (
     Model,
     sane_repr,
 )
+from sentry.eventstore.models import Event
 from sentry.utils.http import absolute_uri
 from sentry.utils.numbers import base32_decode, base32_encode
 from sentry.utils.strings import strip, truncatechars
@@ -96,16 +102,19 @@ def get_group_with_redirect(id_or_qualified_short_id, queryset=None, organizatio
 
         if short_id:
             params = {
-                "id": GroupRedirect.objects.filter(
+                "id__in": GroupRedirect.objects.filter(
                     organization_id=organization.id,
                     previous_short_id=short_id.short_id,
                     previous_project_slug=short_id.project_slug,
-                ).values_list("group_id", flat=True)
+                ).values_list("group_id", flat=True)[:1]
             }
         else:
-            params["id"] = GroupRedirect.objects.filter(previous_group_id=params["id"]).values_list(
-                "group_id", flat=True
-            )
+            params = {
+                "id__in": GroupRedirect.objects.filter(
+                    previous_group_id=id_or_qualified_short_id,
+                ).values_list("group_id", flat=True)[:1]
+            }
+
         try:
             return queryset.get(**params), True
         except Group.DoesNotExist:
@@ -138,6 +147,9 @@ STATUS_QUERY_CHOICES = {
     "muted": GroupStatus.IGNORED,
     "reprocessing": GroupStatus.REPROCESSING,
 }
+QUERY_STATUS_LOOKUP = {
+    status: query for query, status in STATUS_QUERY_CHOICES.items() if query != "muted"
+}
 
 # Statuses that can be updated from the regular "update group" API
 #
@@ -163,7 +175,7 @@ class EventOrdering(Enum):
 
 def get_oldest_or_latest_event_for_environments(
     ordering, environments=(), issue_id=None, project_id=None
-):
+) -> Optional[Event]:
     conditions = []
 
     if len(environments) > 0:
@@ -187,24 +199,43 @@ def get_oldest_or_latest_event_for_environments(
 class GroupManager(BaseManager):
     use_for_related_fields = True
 
-    def by_qualified_short_id(self, organization_id, short_id):
-        short_id = parse_short_id(short_id)
-        if not short_id:
+    def by_qualified_short_id(self, organization_id: int, short_id: str):
+        return self.by_qualified_short_id_bulk(organization_id, [short_id])[0]
+
+    def by_qualified_short_id_bulk(self, organization_id: int, short_ids: List[str]):
+        short_ids = [parse_short_id(short_id) for short_id in short_ids]
+        if not short_ids or any(short_id is None for short_id in short_ids):
             raise Group.DoesNotExist()
-        return Group.objects.exclude(
-            status__in=[
-                GroupStatus.PENDING_DELETION,
-                GroupStatus.DELETION_IN_PROGRESS,
-                GroupStatus.PENDING_MERGE,
-            ]
-        ).get(
-            project__organization=organization_id,
-            project__slug=short_id.project_slug,
-            short_id=short_id.short_id,
+
+        project_short_id_lookup = defaultdict(list)
+        for short_id in short_ids:
+            project_short_id_lookup[short_id.project_slug].append(short_id.short_id)
+
+        short_id_lookup = reduce(
+            or_,
+            [
+                Q(project__slug=slug, short_id__in=short_ids)
+                for slug, short_ids in project_short_id_lookup.items()
+            ],
         )
 
+        groups: List[Group] = list(
+            Group.objects.exclude(
+                status__in=[
+                    GroupStatus.PENDING_DELETION,
+                    GroupStatus.DELETION_IN_PROGRESS,
+                    GroupStatus.PENDING_MERGE,
+                ]
+            ).filter(short_id_lookup, project__organization=organization_id)
+        )
+        group_lookup: Set[int] = {group.short_id for group in groups}
+        for short_id in short_ids:
+            if short_id.short_id not in group_lookup:
+                raise Group.DoesNotExist()
+        return groups
+
     def from_kwargs(self, project, **kwargs):
-        from sentry.event_manager import HashDiscarded, EventManager
+        from sentry.event_manager import EventManager, HashDiscarded
 
         manager = EventManager(kwargs)
         manager.normalize()
@@ -270,7 +301,7 @@ class Group(Model):
     Aggregated message which summarizes a set of Events.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     project = FlexibleForeignKey("sentry.Project")
     logger = models.CharField(
@@ -320,8 +351,15 @@ class Group(Model):
         verbose_name_plural = _("grouped messages")
         verbose_name = _("grouped message")
         permissions = (("can_view", "Can view"),)
-        index_together = [("project", "first_release"), ("project", "id")]
-        unique_together = (("project", "short_id"),)
+        index_together = [
+            ("project", "first_release"),
+            ("project", "id"),
+            ("project", "status", "last_seen", "id"),
+        ]
+        unique_together = (
+            ("project", "short_id"),
+            ("project", "id"),
+        )
 
     __repr__ = sane_repr("project_id")
 
@@ -346,12 +384,20 @@ class Group(Model):
         )
         super().save(*args, **kwargs)
 
-    def get_absolute_url(self, params=None, event_id=None):
-        # Built manually in preference to django.core.urlresolvers.reverse,
+    def get_absolute_url(
+        self,
+        params: Optional[Mapping[str, str]] = None,
+        event_id: Optional[int] = None,
+        organization_slug: Optional[str] = None,
+    ) -> str:
+        # Built manually in preference to django.urls.reverse,
         # because reverse has a measured performance impact.
         event_path = f"events/{event_id}/" if event_id else ""
         url = "organizations/{org}/issues/{id}/{event_path}{params}".format(
-            org=urlquote(self.organization.slug),
+            # Pass organization_slug if this needs to be called multiple times to avoid n+1 queries
+            org=urlquote(
+                self.organization.slug if organization_slug is None else organization_slug
+            ),
             id=self.id,
             event_path=event_path,
             params="?" + urlencode(params) if params else "",
@@ -361,7 +407,7 @@ class Group(Model):
     @property
     def qualified_short_id(self):
         if self.short_id is not None:
-            return "{}-{}".format(self.project.slug.upper(), base32_encode(self.short_id))
+            return f"{self.project.slug.upper()}-{base32_encode(self.short_id)}"
 
     def is_over_resolve_age(self):
         resolve_age = self.project.get_option("sentry:resolve_age", None)
@@ -416,12 +462,14 @@ class Group(Model):
 
         from sentry.models import GroupShare
 
-        return cls.objects.get(id=GroupShare.objects.filter(uuid=share_id).values_list("group_id"))
+        return cls.objects.get(
+            id__in=GroupShare.objects.filter(uuid=share_id).values_list("group_id")[:1]
+        )
 
     def get_score(self):
         return type(self).calculate_score(self.times_seen, self.last_seen)
 
-    def get_latest_event(self):
+    def get_latest_event(self) -> Optional[Event]:
         if not hasattr(self, "_latest_event"):
             self._latest_event = self.get_latest_event_for_environments()
 
@@ -443,14 +491,39 @@ class Group(Model):
             project_id=self.project_id,
         )
 
+    def _get_cache_key(self, project_id, group_id, first):
+        return f"g-r:{group_id}-{project_id}-{first}"
+
+    def __get_release(self, project_id, group_id, first=True):
+        from sentry.models import GroupRelease, Release
+
+        orderby = "first_seen" if first else "-last_seen"
+        cache_key = self._get_cache_key(project_id, group_id, first)
+        try:
+            release_version = cache.get(cache_key)
+            if release_version is None:
+                release_version = Release.objects.get(
+                    id__in=GroupRelease.objects.filter(group_id=group_id)
+                    .order_by(orderby)
+                    .values("release_id")[:1]
+                ).version
+                cache.set(cache_key, release_version, 3600)
+            elif release_version is False:
+                release_version = None
+            return release_version
+        except Release.DoesNotExist:
+            cache.set(cache_key, False, 3600)
+            return None
+
     def get_first_release(self):
         if self.first_release_id is None:
-            return tagstore.get_first_release(self.project_id, self.id)
+            first_release = self.__get_release(self.project_id, self.id, True)
+            return first_release
 
         return self.first_release.version
 
     def get_last_release(self):
-        return tagstore.get_last_release(self.project_id, self.id)
+        return self.__get_release(self.project_id, self.id, False)
 
     def get_event_type(self):
         """
@@ -460,7 +533,7 @@ class Group(Model):
         """
         return self.data.get("type", "default")
 
-    def get_event_metadata(self):
+    def get_event_metadata(self) -> Mapping[str, str]:
         """
         Return the metadata of this issue.
 
@@ -469,7 +542,7 @@ class Group(Model):
         return self.data["metadata"]
 
     @property
-    def title(self):
+    def title(self) -> str:
         et = eventtypes.get(self.get_event_type())()
         return et.get_title(self.get_event_metadata())
 
@@ -511,7 +584,7 @@ class Group(Model):
 
     @staticmethod
     def issues_mapping(group_ids, project_ids, organization):
-        """ Create a dictionary of group_ids to their qualified_short_ids """
+        """Create a dictionary of group_ids to their qualified_short_ids"""
         return {
             i.id: i.qualified_short_id
             for i in Group.objects.filter(

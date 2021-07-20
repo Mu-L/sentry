@@ -1,20 +1,22 @@
 from collections import namedtuple
-from django.conf import settings
-from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 from functools import partial
+from typing import Optional
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
+
+from django.conf import settings
 
 from sentry import options
 from sentry.utils import json
-from sentry.utils.compat import map
-from sentry.utils.compat import filter
+from sentry.utils.compat import filter, map
 
 ParsedUriMatch = namedtuple("ParsedUriMatch", ["scheme", "domain", "path"])
 
 
-def absolute_uri(url=None):
+def absolute_uri(url: Optional[str] = None) -> str:
+    prefix = options.get("system.url-prefix")
     if not url:
-        return options.get("system.url-prefix")
-    return urljoin(options.get("system.url-prefix").rstrip("/") + "/", url.lstrip("/"))
+        return prefix
+    return urljoin(prefix.rstrip("/") + "/", url.lstrip("/"))
 
 
 def origin_from_url(url):
@@ -62,18 +64,19 @@ def is_same_domain(url1, url2):
 
 
 def get_origins(project=None):
-    if settings.SENTRY_ALLOW_ORIGIN == "*":
-        return frozenset(["*"])
-
-    if settings.SENTRY_ALLOW_ORIGIN:
-        result = settings.SENTRY_ALLOW_ORIGIN.split(" ")
+    if not project:
+        if settings.SENTRY_ALLOW_ORIGIN in ("*", None):
+            result = ["*"]
+        elif settings.SENTRY_ALLOW_ORIGIN:
+            result = settings.SENTRY_ALLOW_ORIGIN.split(" ")
+        else:
+            result = []
     else:
-        result = []
-
-    if project:
         optval = project.get_option("sentry:origins", ["*"])
         if optval:
-            result.extend(optval)
+            result = optval
+        else:
+            result = []
 
     # lowercase and strip the trailing slash from all origin values
     # filter out empty values

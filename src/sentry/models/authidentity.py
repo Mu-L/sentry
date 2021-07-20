@@ -1,4 +1,5 @@
 from datetime import timedelta
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -7,7 +8,7 @@ from sentry.db.models import EncryptedJsonField, FlexibleForeignKey, Model, sane
 
 
 class AuthIdentity(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL)
     auth_provider = FlexibleForeignKey("sentry.AuthProvider")

@@ -2,10 +2,9 @@ __all__ = ["from_user", "from_member", "DEFAULT"]
 
 import warnings
 
+import sentry_sdk
 from django.conf import settings
 from django.utils.functional import cached_property
-
-import sentry_sdk
 
 from sentry import roles
 from sentry.auth.superuser import is_active_superuser
@@ -17,9 +16,15 @@ from sentry.models import (
     Project,
     ProjectStatus,
     SentryApp,
-    UserPermission,
     Team,
+    UserPermission,
 )
+from sentry.utils.request_cache import request_cache
+
+
+@request_cache
+def get_cached_organization_member(user_id, organization_id):
+    return OrganizationMember.objects.get(user_id=user_id, organization_id=organization_id)
 
 
 def _sso_params(member):
@@ -280,7 +285,7 @@ def from_request(request, organization=None, scopes=None):
         # we special case superuser so that if they're a member of the org
         # they must still follow SSO checks, but they gain global access
         try:
-            member = OrganizationMember.objects.get(user=request.user, organization=organization)
+            member = get_cached_organization_member(request.user.id, organization.id)
         except OrganizationMember.DoesNotExist:
             requires_sso, sso_is_valid = False, True
         else:
@@ -304,7 +309,7 @@ def from_request(request, organization=None, scopes=None):
         )
 
     # TODO: from_auth does not take scopes as a parameter so this fails for anon user
-    if hasattr(request, "auth") and not request.user.is_authenticated():
+    if hasattr(request, "auth") and not request.user.is_authenticated:
         return from_auth(request.auth, scopes=scopes)
 
     return from_user(request.user, organization, scopes=scopes)
@@ -339,14 +344,14 @@ def _from_sentry_app(user, organization=None):
 
 
 def from_user(user, organization=None, scopes=None):
-    if not user or user.is_anonymous() or not user.is_active:
+    if not user or user.is_anonymous or not user.is_active:
         return DEFAULT
 
     if not organization:
         return OrganizationlessAccess(permissions=UserPermission.for_user(user.id))
 
     try:
-        om = OrganizationMember.objects.get(user=user, organization=organization)
+        om = get_cached_organization_member(user.id, organization.id)
     except OrganizationMember.DoesNotExist:
         return OrganizationlessAccess(permissions=UserPermission.for_user(user.id))
 

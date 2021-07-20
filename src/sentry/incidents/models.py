@@ -1,14 +1,20 @@
 from collections import namedtuple
+from enum import Enum
 
 from django.conf import settings
 from django.core.cache import cache
 from django.db import IntegrityError, models, transaction
 from django.db.models.signals import post_delete, post_save
 from django.utils import timezone
-from enum import Enum
 
-from sentry.db.models import FlexibleForeignKey, Model, UUIDField, OneToOneCascadeDeletes
-from sentry.db.models import ArrayField, sane_repr
+from sentry.db.models import (
+    ArrayField,
+    FlexibleForeignKey,
+    Model,
+    OneToOneCascadeDeletes,
+    UUIDField,
+    sane_repr,
+)
 from sentry.db.models.manager import BaseManager
 from sentry.models import Team, User
 from sentry.snuba.models import QuerySubscription
@@ -17,7 +23,7 @@ from sentry.utils.retries import TimedRetryPolicy
 
 
 class IncidentProject(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     project = FlexibleForeignKey("sentry.Project", db_index=False, db_constraint=False)
     incident = FlexibleForeignKey("sentry.Incident")
@@ -29,7 +35,7 @@ class IncidentProject(Model):
 
 
 class IncidentSeen(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     incident = FlexibleForeignKey("sentry.Incident")
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL, db_index=False)
@@ -139,7 +145,7 @@ INCIDENT_STATUS = {
 
 
 class Incident(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     objects = IncidentManager()
 
@@ -185,7 +191,7 @@ class Incident(Model):
 
 
 class PendingIncidentSnapshot(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     incident = OneToOneCascadeDeletes("sentry.Incident")
     target_run_date = models.DateTimeField(db_index=True, default=timezone.now)
@@ -197,7 +203,7 @@ class PendingIncidentSnapshot(Model):
 
 
 class IncidentSnapshot(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     incident = OneToOneCascadeDeletes("sentry.Incident")
     event_stats_snapshot = FlexibleForeignKey("sentry.TimeSeriesSnapshot")
@@ -211,7 +217,7 @@ class IncidentSnapshot(Model):
 
 
 class TimeSeriesSnapshot(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     start = models.DateTimeField()
     end = models.DateTimeField()
@@ -235,7 +241,10 @@ class TimeSeriesSnapshot(Model):
         # with what Snuba returns we cast floats to ints when they're whole numbers.
         return {
             "data": [
-                {"time": int(time), "count": count if not count.is_integer() else int(count)}
+                {
+                    "time": int(time),
+                    "count": count if count is None or not count.is_integer() else int(count),
+                }
                 for time, count in self.values
             ]
         }
@@ -249,7 +258,7 @@ class IncidentActivityType(Enum):
 
 
 class IncidentActivity(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     incident = FlexibleForeignKey("sentry.Incident")
     user = FlexibleForeignKey("sentry.User", null=True)
@@ -265,7 +274,7 @@ class IncidentActivity(Model):
 
 
 class IncidentSubscription(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     incident = FlexibleForeignKey("sentry.Incident", db_index=False)
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL)
@@ -342,7 +351,7 @@ class AlertRuleManager(BaseManager):
 
 
 class AlertRuleExcludedProjects(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     alert_rule = FlexibleForeignKey("sentry.AlertRule", db_index=False)
     project = FlexibleForeignKey("sentry.Project", db_constraint=False)
@@ -355,13 +364,14 @@ class AlertRuleExcludedProjects(Model):
 
 
 class AlertRule(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     objects = AlertRuleManager()
     objects_with_snapshots = BaseManager()
 
     organization = FlexibleForeignKey("sentry.Organization", null=True)
     snuba_query = FlexibleForeignKey("sentry.SnubaQuery", null=True, unique=True)
+    owner = FlexibleForeignKey("sentry.Actor", null=True)
     excluded_projects = models.ManyToManyField(
         "sentry.Project", related_name="alert_rule_exclusions", through=AlertRuleExcludedProjects
     )
@@ -437,7 +447,7 @@ class IncidentTriggerManager(BaseManager):
 
 
 class IncidentTrigger(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     objects = IncidentTriggerManager()
 
@@ -482,7 +492,7 @@ class AlertRuleTriggerManager(BaseManager):
 
 
 class AlertRuleTrigger(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     alert_rule = FlexibleForeignKey("sentry.AlertRule")
     label = models.TextField()
@@ -503,7 +513,7 @@ class AlertRuleTrigger(Model):
 
 
 class AlertRuleTriggerExclusion(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     alert_rule_trigger = FlexibleForeignKey("sentry.AlertRuleTrigger", related_name="exclusions")
     query_subscription = FlexibleForeignKey("sentry.QuerySubscription")
@@ -521,7 +531,7 @@ class AlertRuleTriggerAction(Model):
     typically some sort of notification.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     _type_registrations = {}
 
@@ -642,7 +652,7 @@ class AlertRuleActivityType(Enum):
 
 
 class AlertRuleActivity(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     alert_rule = FlexibleForeignKey("sentry.AlertRule")
     previous_alert_rule = FlexibleForeignKey(

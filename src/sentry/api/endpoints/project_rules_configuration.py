@@ -1,8 +1,9 @@
+from rest_framework.response import Response
+
 from sentry import features
 from sentry.api.bases.project import ProjectEndpoint
 from sentry.constants import MIGRATED_CONDITIONS, TICKET_ACTIONS
 from sentry.rules import rules
-from rest_framework.response import Response
 
 
 class ProjectRulesConfigurationEndpoint(ProjectEndpoint):
@@ -18,6 +19,9 @@ class ProjectRulesConfigurationEndpoint(ProjectEndpoint):
         project_has_filters = features.has("projects:alert-filters", project)
         can_create_tickets = features.has(
             "organizations:integrations-ticket-rules", project.organization
+        )
+        has_percent_condition = features.has(
+            "organizations:issue-percent-filters", project.organization
         )
         # TODO: conditions need to be based on actions
         for rule_type, rule_cls in rules:
@@ -51,7 +55,12 @@ class ProjectRulesConfigurationEndpoint(ProjectEndpoint):
                 continue
 
             if rule_type.startswith("condition/"):
-                condition_list.append(context)
+                if (
+                    has_percent_condition
+                    or context["id"]
+                    != "sentry.rules.conditions.event_frequency.EventFrequencyPercentCondition"
+                ):
+                    condition_list.append(context)
             elif rule_type.startswith("filter/"):
                 filter_list.append(context)
             elif rule_type.startswith("action/"):

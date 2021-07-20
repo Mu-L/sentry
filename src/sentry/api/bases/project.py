@@ -2,13 +2,13 @@ from rest_framework.response import Response
 
 from sentry import roles
 from sentry.api.base import Endpoint
-from sentry.api.utils import get_date_range_from_params, InvalidParams
+from sentry.api.exceptions import ProjectMoved, ResourceDoesNotExist
 from sentry.api.helpers.environments import get_environments
-from sentry.api.exceptions import ResourceDoesNotExist, ProjectMoved
+from sentry.api.utils import InvalidParams, get_date_range_from_params
 from sentry.auth.superuser import is_active_superuser
 from sentry.auth.system import is_system_auth
-from sentry.models import OrganizationMember, Project, ProjectStatus, ProjectRedirect, SentryApp
-from sentry.utils.sdk import configure_scope, bind_organization_context
+from sentry.models import OrganizationMember, Project, ProjectRedirect, ProjectStatus, SentryApp
+from sentry.utils.sdk import bind_organization_context, configure_scope
 
 from .organization import OrganizationPermission
 from .team import has_team_permission
@@ -37,7 +37,7 @@ class ProjectPermission(OrganizationPermission):
             )
         elif is_system_auth(request.auth):
             return True
-        elif request.user and request.user.is_authenticated():
+        elif request.user and request.user.is_authenticated:
             # this is only for team-less projects
             if is_active_superuser(request):
                 return True

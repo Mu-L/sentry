@@ -1,14 +1,13 @@
-import time
 import re
-
+import time
 from datetime import datetime, timedelta
+
+from django.apps import apps
 from django.conf import settings
 from django.db import models
-from django.apps import apps
 
 from .fields import JSONField
 from .utils import setting
-
 
 AUTH_USER_MODEL = settings.AUTH_USER_MODEL
 
@@ -23,7 +22,7 @@ CLEAN_USERNAME_REGEX = re.compile(r"[^\w.@+-_]+", re.UNICODE)
 class UserSocialAuth(models.Model):
     """Social Auth association model"""
 
-    user = models.ForeignKey(AUTH_USER_MODEL, related_name="social_auth")
+    user = models.ForeignKey(AUTH_USER_MODEL, related_name="social_auth", on_delete=models.CASCADE)
     provider = models.CharField(max_length=32)
     uid = models.CharField(max_length=UID_LENGTH)
     extra_data = JSONField(default="{}")
@@ -36,7 +35,7 @@ class UserSocialAuth(models.Model):
 
     def __str__(self):
         """Return associated user unicode representation"""
-        return "{} - {}".format(str(self.user), self.provider.title())
+        return f"{self.user} - {self.provider.title()}"
 
     def get_backend(self):
         # Make import here to avoid recursive imports :-/

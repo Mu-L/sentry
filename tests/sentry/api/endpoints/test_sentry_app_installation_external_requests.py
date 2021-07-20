@@ -1,7 +1,7 @@
 import responses
-
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.utils.http import urlencode
+
 from sentry.testutils import APITestCase
 from sentry.utils import json
 
@@ -65,7 +65,7 @@ class SentryAppInstallationExternalRequestsEndpointTest(APITestCase):
             "query": "proj",
             "dependentData": json.dumps({"org_id": "A"}),
         }
-        url = "{}?{}".format(self.url, urlencode(query))
+        url = f"{self.url}?{urlencode(query)}"
         response = self.client.get(url, format="json")
         assert response.status_code == 200
         assert response.data == {"choices": [["1234", "Project Name"]]}

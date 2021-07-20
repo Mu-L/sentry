@@ -25,32 +25,43 @@
 
   <link rel="mask-icon" sizes="any" href="{% absolute_asset_url "sentry" "images/logos/logo-sentry.svg" %}" color="#FB4226">
 
-  <link href="{% asset_url "sentry" "dist/sentry.css" %}" rel="stylesheet"/>
+  <link href="{% unversioned_asset_url "sentry" "entrypoints/sentry.css" cache_bust=True %}" rel="stylesheet"/>
 
   {% block css %}{% endblock %}
 
   <title>{% block title %}Sentry{% endblock %}</title>
 
-  {% script %}
-  <script>
-    window.__initialData = {% get_react_config %};
-  </script>
-  {% endscript %}
-
-  {% block scripts %}
-  {% locale_js_include %}
-  {% asset_url "sentry" "dist/vendor.js" as asset_url %}
-  {% script src=asset_url %}{% endscript %}
-
-  {% asset_url "sentry" "dist/app.js" as asset_url %}
-  {% script src=asset_url data-entry="true" %}{% endscript %}
+  {% block initial_data %}
+    {% script %}
+    <script>
+      window.__initialData = {% get_react_config %};
+    </script>
+    {% endscript %}
+  {% endblock %}
 
   {% script %}
   <script>
     // if the ads.js file loads below it will mark this variable as false
     window.adblockSuspected = true;
+    // Initialize this so that we can queue up tasks when Sentry SPA is initialized
+    window.__onSentryInit = window.__onSentryInit || [];
   </script>
   {% endscript %}
+
+  {% script %}
+    {% include "sentry/partial/preload-data.html" %}
+  {% endscript %}
+
+  {% block scripts %}
+  {% block scripts_main_entrypoint %}
+    {% unversioned_asset_url "sentry" "entrypoints/app.js" cache_bust=True as asset_url %}
+    {% script src=asset_url data-entry="true" %}{% endscript %}
+  {% endblock %}
+
+  {% injected_script_assets as injected_assets %}
+  {% for asset_url in injected_assets %}
+    {% script src=asset_url %}{% endscript %}
+  {% endfor %}
 
   {% asset_url 'sentry' 'js/ads.js' as asset_url %}
   {% script src=asset_url %}{% endscript %}

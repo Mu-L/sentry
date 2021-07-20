@@ -1,4 +1,4 @@
-import {COL_WIDTH_UNDEFINED} from 'app/components/gridEditable/utils';
+import {COL_WIDTH_UNDEFINED} from 'app/components/gridEditable';
 import EventView, {
   isAPIPayloadSimilar,
   pickRelevantLocationQueryStrings,
@@ -52,6 +52,7 @@ describe('EventView.fromLocation()', function () {
         sort: ['title', '-count'],
         query: 'event.type:transaction',
         project: [123],
+        team: ['myteams', '1', '2'],
         start: '2019-10-01T00:00:00',
         end: '2019-10-02T00:00:00',
         statsPeriod: '14d',
@@ -73,6 +74,7 @@ describe('EventView.fromLocation()', function () {
       sorts: generateSorts(['count']),
       query: 'event.type:transaction',
       project: [123],
+      team: ['myteams', 1, 2],
       start: undefined,
       end: undefined,
       statsPeriod: '14d',
@@ -183,6 +185,7 @@ describe('EventView.fromSavedQuery()', function () {
       fields: ['count()', 'id'],
       query: 'event.type:transaction',
       projects: [123],
+      teams: ['myteams', 1],
       range: '14d',
       start: '2019-10-01T00:00:00',
       end: '2019-10-02T00:00:00',
@@ -202,6 +205,7 @@ describe('EventView.fromSavedQuery()', function () {
       sorts: [{field: 'id', kind: 'desc'}],
       query: 'event.type:transaction',
       project: [123],
+      team: ['myteams', 1],
       start: undefined,
       end: undefined,
       // statsPeriod has precedence
@@ -225,6 +229,7 @@ describe('EventView.fromSavedQuery()', function () {
       sorts: [{field: 'id', kind: 'desc'}],
       query: 'event.type:transaction',
       project: [123],
+      team: ['myteams', 1],
       start: '2019-10-01T00:00:00.000',
       end: '2019-10-02T00:00:00.000',
       statsPeriod: undefined,
@@ -516,6 +521,347 @@ describe('EventView.fromNewQueryWithLocation()', function () {
       environment: ['staging'],
       yAxis: undefined,
     });
+  });
+});
+
+describe('EventView.fromSavedQueryOrLocation()', function () {
+  it('maps basic properties of saved query', function () {
+    const saved = {
+      id: '42',
+      name: 'best query',
+      fields: ['count()', 'id'],
+      query: 'event.type:transaction',
+      projects: [123],
+      range: '14d',
+      start: '2019-10-01T00:00:00',
+      end: '2019-10-02T00:00:00',
+      orderby: '-id',
+      environment: ['staging'],
+      display: 'previous',
+    };
+
+    const location = {
+      query: {
+        statsPeriod: '14d',
+        project: ['123'],
+        team: ['myteams', '1', '2'],
+        environment: ['staging'],
+      },
+    };
+    const eventView = EventView.fromSavedQueryOrLocation(saved, location);
+
+    expect(eventView).toMatchObject({
+      id: saved.id,
+      name: saved.name,
+      fields: [
+        {field: 'count()', width: COL_WIDTH_UNDEFINED},
+        {field: 'id', width: COL_WIDTH_UNDEFINED},
+      ],
+      sorts: [{field: 'id', kind: 'desc'}],
+      query: 'event.type:transaction',
+      project: [123],
+      team: ['myteams', 1, 2],
+      start: undefined,
+      end: undefined,
+      // statsPeriod has precedence
+      statsPeriod: '14d',
+      environment: ['staging'],
+      yAxis: undefined,
+      display: 'previous',
+    });
+
+    const savedQuery2 = {...saved, range: undefined};
+    const location2 = {
+      query: {
+        project: ['123'],
+        environment: ['staging'],
+        start: '2019-10-01T00:00:00',
+        end: '2019-10-02T00:00:00',
+      },
+    };
+
+    const eventView2 = EventView.fromSavedQueryOrLocation(savedQuery2, location2);
+
+    expect(eventView2).toMatchObject({
+      id: saved.id,
+      name: saved.name,
+      fields: [
+        {field: 'count()', width: COL_WIDTH_UNDEFINED},
+        {field: 'id', width: COL_WIDTH_UNDEFINED},
+      ],
+      sorts: [{field: 'id', kind: 'desc'}],
+      query: 'event.type:transaction',
+      project: [123],
+      start: '2019-10-01T00:00:00.000',
+      end: '2019-10-02T00:00:00.000',
+      statsPeriod: undefined,
+      environment: ['staging'],
+    });
+  });
+
+  it('overrides saved query params with location params', function () {
+    const saved = {
+      id: '42',
+      name: 'best query',
+      fields: ['count()', 'id'],
+      query: 'event.type:transaction',
+      projects: [123],
+      range: '14d',
+      start: '2019-10-01T00:00:00',
+      end: '2019-10-02T00:00:00',
+      orderby: '-id',
+      environment: ['staging'],
+      display: 'previous',
+    };
+
+    const location = {
+      query: {
+        id: '42',
+        statsPeriod: '7d',
+        project: ['3'],
+      },
+    };
+    const eventView = EventView.fromSavedQueryOrLocation(saved, location);
+
+    expect(eventView).toMatchObject({
+      id: saved.id,
+      name: saved.name,
+      fields: [
+        {field: 'count()', width: COL_WIDTH_UNDEFINED},
+        {field: 'id', width: COL_WIDTH_UNDEFINED},
+      ],
+      sorts: [{field: 'id', kind: 'desc'}],
+      query: 'event.type:transaction',
+      project: [3],
+      start: undefined,
+      end: undefined,
+      // statsPeriod has precedence
+      statsPeriod: '7d',
+      environment: [],
+      yAxis: undefined,
+      display: 'previous',
+    });
+  });
+
+  it('maps saved query with no conditions', function () {
+    const saved = {
+      orderby: '-count',
+      name: 'foo bar',
+      fields: ['release', 'count()'],
+      widths: [111, 222],
+      dateCreated: '2019-10-30T06:13:17.632078Z',
+      query: '',
+      environment: [],
+      version: 2,
+      createdBy: '1',
+      dateUpdated: '2019-10-30T06:13:17.632096Z',
+      id: '5',
+      yAxis: 'count()',
+    };
+
+    const location = {
+      query: {
+        id: '5',
+        project: [1],
+      },
+    };
+
+    const eventView = EventView.fromSavedQueryOrLocation(saved, location);
+
+    const expected = {
+      id: '5',
+      name: 'foo bar',
+      fields: [
+        {field: 'release', width: 111},
+        {field: 'count()', width: 222},
+      ],
+      sorts: generateSorts(['count']),
+      query: '',
+      project: [1],
+      yAxis: 'count()',
+    };
+
+    expect(eventView).toMatchObject(expected);
+  });
+
+  it('maps query with cleared conditions', function () {
+    const saved = {
+      id: '42',
+      name: 'best query',
+      fields: ['count()', 'id'],
+      query: 'event.type:transaction',
+      projects: [123],
+      range: '14d',
+      start: '2019-10-01T00:00:00',
+      end: '2019-10-02T00:00:00',
+      orderby: '-id',
+      environment: ['staging'],
+      display: 'previous',
+    };
+
+    const location = {
+      query: {
+        id: '42',
+        statsPeriod: '7d',
+      },
+    };
+    const eventView = EventView.fromSavedQueryOrLocation(saved, location);
+
+    expect(eventView).toMatchObject({
+      id: saved.id,
+      name: saved.name,
+      fields: [
+        {field: 'count()', width: COL_WIDTH_UNDEFINED},
+        {field: 'id', width: COL_WIDTH_UNDEFINED},
+      ],
+      sorts: [{field: 'id', kind: 'desc'}],
+      query: 'event.type:transaction',
+      start: undefined,
+      end: undefined,
+      // statsPeriod has precedence
+      statsPeriod: '7d',
+      environment: [],
+      yAxis: undefined,
+      display: 'previous',
+    });
+
+    const location2 = {
+      query: {
+        id: '42',
+        statsPeriod: '7d',
+        query: '',
+      },
+    };
+    const eventView2 = EventView.fromSavedQueryOrLocation(saved, location2);
+
+    expect(eventView2).toMatchObject({
+      id: saved.id,
+      name: saved.name,
+      fields: [
+        {field: 'count()', width: COL_WIDTH_UNDEFINED},
+        {field: 'id', width: COL_WIDTH_UNDEFINED},
+      ],
+      sorts: [{field: 'id', kind: 'desc'}],
+      query: '',
+      start: undefined,
+      end: undefined,
+      // statsPeriod has precedence
+      statsPeriod: '7d',
+      environment: [],
+      yAxis: undefined,
+      display: 'previous',
+    });
+  });
+
+  it('event views are equal when start and end datetime differ in format', function () {
+    const saved = {
+      orderby: '-count_timestamp',
+      end: '2019-10-23T19:27:04+0000',
+      name: 'release query',
+      fields: ['release', 'count(timestamp)'],
+      dateCreated: '2019-10-30T05:10:23.718937Z',
+      environment: ['dev', 'production'],
+      start: '2019-10-20T21:02:51+0000',
+      version: 2,
+      createdBy: '1',
+      dateUpdated: '2019-10-30T07:25:58.291917Z',
+      id: '3',
+    };
+
+    const location = {
+      query: {
+        id: '3',
+        start: '2019-10-20T21:02:51+0000',
+        end: '2019-10-23T19:27:04+0000',
+      },
+    };
+
+    const eventView = EventView.fromSavedQueryOrLocation(saved, location);
+
+    const location2 = {
+      query: {
+        id: '3',
+        start: '2019-10-20T21:02:51Z',
+        end: '2019-10-23T19:27:04Z',
+      },
+    };
+    const eventView2 = EventView.fromSavedQueryOrLocation(saved, location2);
+
+    expect(eventView.isEqualTo(eventView2)).toBe(true);
+
+    const location3 = {
+      query: {
+        id: '3',
+        start: '2019-10-20T21:02:51Z',
+        end: '2019-10-23T19:27:04+0000',
+      },
+    };
+    const eventView3 = EventView.fromSavedQueryOrLocation(saved, location3);
+
+    expect(eventView.isEqualTo(eventView3)).toBe(true);
+
+    const location4 = {
+      query: {
+        id: '3',
+        start: '2019-10-20T21:02:51+0000',
+        end: '2019-10-23T19:27:04Z',
+      },
+    };
+    const eventView4 = EventView.fromSavedQueryOrLocation(saved, location4);
+
+    expect(eventView.isEqualTo(eventView4)).toBe(true);
+  });
+
+  it('event views are not equal when datetime selection are invalid', function () {
+    const saved = {
+      orderby: '-count_timestamp',
+      end: '2019-10-23T19:27:04+0000',
+      name: 'release query',
+      fields: ['release', 'count(timestamp)'],
+      dateCreated: '2019-10-30T05:10:23.718937Z',
+      environment: ['dev', 'production'],
+      start: '2019-10-20T21:02:51+0000',
+      version: 2,
+      createdBy: '1',
+      dateUpdated: '2019-10-30T07:25:58.291917Z',
+      id: '3',
+      projects: [1],
+    };
+
+    const location = {
+      query: {
+        id: '3',
+        end: '2019-10-23T19:27:04+0000',
+        start: '2019-10-20T21:02:51+0000',
+      },
+    };
+
+    const eventView = EventView.fromSavedQueryOrLocation(saved, location);
+
+    const location2 = {
+      query: {
+        id: '3',
+        end: '2019-10-23T19:27:04+0000',
+        start: '',
+      },
+    };
+    const eventView2 = EventView.fromSavedQueryOrLocation(saved, location2);
+
+    expect(eventView.isEqualTo(eventView2)).toBe(false);
+
+    const location3 = {
+      query: {
+        id: '3',
+        end: '',
+        start: '2019-10-20T21:02:51+0000',
+      },
+    };
+    const eventView3 = EventView.fromSavedQueryOrLocation(saved, location3);
+
+    expect(eventView.isEqualTo(eventView3)).toBe(false);
+
+    // this is expected since datetime (start and end) are normalized
+    expect(eventView2.isEqualTo(eventView3)).toBe(true);
   });
 });
 
@@ -1226,6 +1572,9 @@ describe('EventView.clone()', function () {
     expect(eventView).toMatchObject(state);
     expect(eventView2).toMatchObject(state);
     expect(eventView.isEqualTo(eventView2)).toBe(true);
+    expect(
+      eventView.additionalConditions === eventView2.additionalConditions
+    ).toBeFalsy();
   });
 });
 
@@ -1878,6 +2227,23 @@ describe('EventView.getQuery()', function () {
   });
 });
 
+describe('EventView.getQueryWithAdditionalConditions', function () {
+  it('with overlapping conditions', function () {
+    const eventView = new EventView({
+      fields: [],
+      sorts: [],
+      project: [],
+      query: 'event.type:transaction foo:bar',
+    });
+
+    eventView.additionalConditions.setTagValues('event.type', ['transaction']);
+
+    expect(eventView.getQueryWithAdditionalConditions()).toEqual(
+      'event.type:transaction foo:bar'
+    );
+  });
+});
+
 describe('EventView.sortForField()', function () {
   const state = {
     id: '1234',
@@ -2179,6 +2545,75 @@ describe('EventView.getResultsViewUrlTarget()', function () {
   });
 });
 
+describe('EventView.getResultsViewShortUrlTarget()', function () {
+  const state = {
+    id: '1234',
+    name: 'best query',
+    fields: [{field: 'count()'}, {field: 'project.id'}],
+    sorts: generateSorts(['count']),
+    query: 'event.type:error',
+    project: [42],
+    start: '2019-10-01T00:00:00',
+    end: '2019-10-02T00:00:00',
+    statsPeriod: '14d',
+    environment: ['staging'],
+    display: 'previous',
+  };
+  const organization = TestStubs.Organization();
+
+  it('generates a URL', function () {
+    const view = new EventView(state);
+    const result = view.getResultsViewShortUrlTarget(organization.slug);
+    expect(result.pathname).toEqual('/organizations/org-slug/discover/results/');
+    expect(result.query).not.toHaveProperty('name');
+    expect(result.query).not.toHaveProperty('fields');
+    expect(result.query).not.toHaveProperty('query');
+    expect(result.query.id).toEqual(state.id);
+    expect(result.query.statsPeriod).toEqual(state.statsPeriod);
+    expect(result.query.project).toEqual(state.project);
+    expect(result.query.environment).toEqual(state.environment);
+  });
+});
+
+describe('EventView.getPerformanceTransactionEventsViewUrlTarget()', function () {
+  const state = {
+    id: '1234',
+    name: 'best query',
+    fields: [{field: 'count()'}, {field: 'project.id'}],
+    sorts: generateSorts(['count']),
+    query: 'event.type:error',
+    project: [42],
+    start: '2019-10-01T00:00:00',
+    end: '2019-10-02T00:00:00',
+    statsPeriod: '14d',
+    environment: ['staging'],
+    display: 'previous',
+  };
+  const organization = TestStubs.Organization();
+  const showTransactions = 'p99';
+  const breakdown = 'http';
+  const webVital = 'measurements.lcp';
+
+  it('generates a URL', function () {
+    const view = new EventView(state);
+    const result = view.getPerformanceTransactionEventsViewUrlTarget(organization.slug, {
+      showTransactions,
+      breakdown,
+      webVital,
+    });
+    expect(result.pathname).toEqual(
+      '/organizations/org-slug/performance/summary/events/'
+    );
+    expect(result.query.query).toEqual(state.query);
+    expect(result.query.project).toEqual(state.project);
+    expect(result.query.sort).toEqual(['-count']);
+    expect(result.query.transaction).toEqual(state.name);
+    expect(result.query.showTransactions).toEqual(showTransactions);
+    expect(result.query.breakdown).toEqual(breakdown);
+    expect(result.query.webVital).toEqual(webVital);
+  });
+});
+
 describe('EventView.getGlobalSelection()', function () {
   it('return default global selection', function () {
     const eventView = new EventView({});
@@ -2337,7 +2772,6 @@ describe('EventView.getYAxisOptions()', function () {
         'ignored-field',
         'count_unique(issue)',
         'last_seen()',
-        'min(time)',
         'max(timestamp)',
       ]),
     });
@@ -2746,6 +3180,77 @@ describe('isAPIPayloadSimilar', function () {
       const thisAPIPayload = thisEventView.getEventsAPIPayload(location);
 
       const otherEventView = thisEventView.withDeletedColumn(0, meta);
+      const otherLocation = {};
+      const otherAPIPayload = otherEventView.getEventsAPIPayload(otherLocation);
+
+      const results = isAPIPayloadSimilar(thisAPIPayload, otherAPIPayload);
+
+      expect(results).toBe(false);
+    });
+
+    it('it is similar if column order changes', function () {
+      const thisEventView = new EventView(state);
+      const location = {};
+      const thisAPIPayload = thisEventView.getEventsAPIPayload(location);
+
+      state.fields.reverse();
+      const otherEventView = new EventView(state);
+      const otherLocation = {};
+      const otherAPIPayload = otherEventView.getEventsAPIPayload(otherLocation);
+
+      const results = isAPIPayloadSimilar(thisAPIPayload, otherAPIPayload);
+
+      expect(results).toBe(true);
+    });
+
+    it('it is similar if equation order relatively same', function () {
+      const equationField = {field: 'equation|failure_count() / count()'};
+      const otherEquationField = {field: 'equation|failure_count() / 2'};
+      state.fields = [
+        {field: 'project.id'},
+        {field: 'count()'},
+        equationField,
+        otherEquationField,
+      ];
+      const thisEventView = new EventView(state);
+      const location = {};
+      const thisAPIPayload = thisEventView.getEventsAPIPayload(location);
+
+      state.fields = [
+        equationField,
+        {field: 'project.id'},
+        {field: 'count()'},
+        otherEquationField,
+      ];
+      const otherEventView = new EventView(state);
+      const otherLocation = {};
+      const otherAPIPayload = otherEventView.getEventsAPIPayload(otherLocation);
+
+      const results = isAPIPayloadSimilar(thisAPIPayload, otherAPIPayload);
+
+      expect(results).toBe(true);
+    });
+
+    it('it is not similar if equation order changes', function () {
+      const equationField = {field: 'equation|failure_count() / count()'};
+      const otherEquationField = {field: 'equation|failure_count() / 2'};
+      state.fields = [
+        {field: 'project.id'},
+        {field: 'count()'},
+        equationField,
+        otherEquationField,
+      ];
+      const thisEventView = new EventView(state);
+      const location = {};
+      const thisAPIPayload = thisEventView.getEventsAPIPayload(location);
+
+      state.fields = [
+        {field: 'project.id'},
+        {field: 'count()'},
+        otherEquationField,
+        equationField,
+      ];
+      const otherEventView = new EventView(state);
       const otherLocation = {};
       const otherAPIPayload = otherEventView.getEventsAPIPayload(otherLocation);
 

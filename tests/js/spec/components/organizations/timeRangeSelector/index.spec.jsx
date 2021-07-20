@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import TimeRangeSelector from 'app/components/organizations/timeRangeSelector';
@@ -112,8 +110,8 @@ describe('TimeRangeSelector', function () {
     wrapper.find('SelectorItem[value="14d"]').simulate('click');
     expect(onChange).toHaveBeenLastCalledWith({
       relative: '14d',
-      start: null,
-      end: null,
+      start: undefined,
+      end: undefined,
     });
 
     wrapper.setProps({relative: '14d', start: null, end: null});
@@ -145,8 +143,8 @@ describe('TimeRangeSelector', function () {
     wrapper.find('SelectorItem[value="14d"]').simulate('click');
     expect(onChange).toHaveBeenLastCalledWith({
       relative: '14d',
-      start: null,
-      end: null,
+      start: undefined,
+      end: undefined,
     });
 
     wrapper.setProps({relative: '14d', start: null, end: null});

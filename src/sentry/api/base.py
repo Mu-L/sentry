@@ -1,12 +1,12 @@
 import functools
 import logging
 import time
-import sentry_sdk
-
 from datetime import datetime, timedelta
+
+import sentry_sdk
 from django.conf import settings
-from django.utils.http import urlquote
 from django.http import HttpResponse
+from django.utils.http import urlquote
 from django.views.decorators.csrf import csrf_exempt
 from pytz import utc
 from rest_framework.authentication import SessionAuthentication
@@ -14,21 +14,19 @@ from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from sentry import tsdb, analytics
+from sentry import analytics, tsdb
 from sentry.auth import access
 from sentry.models import Environment
+from sentry.utils import json
+from sentry.utils.audit import create_audit_entry
 from sentry.utils.cursors import Cursor
 from sentry.utils.dates import to_datetime
 from sentry.utils.http import absolute_uri, is_valid_origin, origin_from_request
-from sentry.utils.audit import create_audit_entry
 from sentry.utils.sdk import capture_exception
-from sentry.utils import json
-
 
 from .authentication import ApiKeyAuthentication, TokenAuthentication
 from .paginator import BadPaginationError, Paginator
 from .permissions import NoPermission
-
 
 __all__ = ["Endpoint", "EnvironmentMixin", "StatsMixin"]
 
@@ -94,14 +92,20 @@ class Endpoint(APIView):
     authentication_classes = DEFAULT_AUTHENTICATION
     permission_classes = (NoPermission,)
 
+    cursor_name = "cursor"
+
     def build_cursor_link(self, request, name, cursor):
-        querystring = "&".join(
-            "{}={}".format(urlquote(k), urlquote(v))
-            for k, v in request.GET.items()
-            if k != "cursor"
-        )
+        querystring = None
+        if request.GET.get("cursor") is None:
+            querystring = request.GET.urlencode()
+        else:
+            mutable_query_dict = request.GET.copy()
+            mutable_query_dict.pop("cursor")
+            querystring = mutable_query_dict.urlencode()
+
         base_url = absolute_uri(urlquote(request.path))
-        if querystring:
+
+        if querystring is not None:
             base_url = f"{base_url}?{querystring}"
         else:
             base_url = base_url + "?"
@@ -204,8 +208,11 @@ class Endpoint(APIView):
 
         try:
             with sentry_sdk.start_span(op="base.dispatch.request", description=type(self).__name__):
-                if origin and request.auth:
-                    allowed_origins = request.auth.get_allowed_origins()
+                if origin:
+                    if request.auth:
+                        allowed_origins = request.auth.get_allowed_origins()
+                    else:
+                        allowed_origins = None
                     if not is_valid_origin(origin, allowed=allowed_origins):
                         response = Response(f"Invalid origin: {origin}", status=400)
                         self.response = self.finalize_response(request, response, *args, **kwargs)
@@ -229,7 +236,7 @@ class Endpoint(APIView):
 
             with sentry_sdk.start_span(
                 op="base.dispatch.execute",
-                description="{}.{}".format(type(self).__name__, handler.__name__),
+                description=f"{type(self).__name__}.{handler.__name__}",
             ):
                 response = handler(request, *args, **kwargs)
 
@@ -293,6 +300,7 @@ class Endpoint(APIView):
         paginator_cls=Paginator,
         default_per_page=100,
         max_per_page=100,
+        cursor_cls=Cursor,
         **paginator_kwargs,
     ):
         assert (paginator and not paginator_kwargs) or (paginator_cls and paginator_kwargs)
@@ -300,9 +308,9 @@ class Endpoint(APIView):
         per_page = self.get_per_page(request, default_per_page, max_per_page)
 
         input_cursor = None
-        if request.GET.get("cursor"):
+        if request.GET.get(self.cursor_name):
             try:
-                input_cursor = Cursor.from_string(request.GET.get("cursor"))
+                input_cursor = cursor_cls.from_string(request.GET.get(self.cursor_name))
             except ValueError:
                 raise ParseError(detail="Invalid cursor parameter.")
 

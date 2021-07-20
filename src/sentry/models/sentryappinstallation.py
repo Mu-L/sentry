@@ -4,8 +4,8 @@ from django.db import models
 from django.utils import timezone
 
 from sentry.constants import SentryAppInstallationStatus
-from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, ParanoidModel, Model
-from sentry.models import Project, DefaultFieldsModel
+from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, Model, ParanoidModel
+from sentry.models import DefaultFieldsModel, Project
 
 
 def default_uuid():
@@ -14,7 +14,7 @@ def default_uuid():
 
 # connects a sentry app installation to an organization and a provider
 class SentryAppInstallationForProvider(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     sentry_app_installation = FlexibleForeignKey("sentry.SentryAppInstallation")
     organization = FlexibleForeignKey("sentry.Organization")
@@ -42,7 +42,7 @@ class SentryAppInstallationForProvider(DefaultFieldsModel):
 
 
 class SentryAppInstallationToken(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     api_token = FlexibleForeignKey("sentry.ApiToken")
     sentry_app_installation = FlexibleForeignKey("sentry.SentryAppInstallation")
@@ -70,7 +70,7 @@ class SentryAppInstallationToken(Model):
                 api_token=token
             )
         except cls.DoesNotExist:
-            return False
+            return Project.objects.none()
 
         return Project.objects.filter(
             organization_id=install_token.sentry_app_installation.organization_id
@@ -78,7 +78,7 @@ class SentryAppInstallationToken(Model):
 
 
 class SentryAppInstallation(ParanoidModel):
-    __core__ = True
+    __include_in_export__ = True
 
     sentry_app = FlexibleForeignKey("sentry.SentryApp", related_name="installations")
 

@@ -1,6 +1,4 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import GroupTagDistributionMeter from 'app/components/group/tagDistributionMeter';
 
@@ -13,7 +11,7 @@ describe('TagDistributionMeter', function () {
   beforeEach(function () {
     organization = TestStubs.Organization();
 
-    element = mount(
+    element = mountWithTheme(
       <GroupTagDistributionMeter
         key="element"
         tag="browser"
@@ -25,7 +23,7 @@ describe('TagDistributionMeter', function () {
       />
     );
 
-    emptyElement = mount(
+    emptyElement = mountWithTheme(
       <GroupTagDistributionMeter
         key="emptyElement"
         tag="browser"

@@ -1,20 +1,20 @@
 import logging
-import requests
-import sentry_sdk
-
 from collections import OrderedDict
 
-from django.core.cache import cache
+import requests
+import sentry_sdk
 from bs4 import BeautifulSoup
+from django.core.cache import cache
 from django.utils.functional import cached_property
-from requests.exceptions import ConnectionError, Timeout, HTTPError
-from sentry.http import build_session
-from sentry.utils import metrics, json
-from sentry.utils.hashlib import md5_text
-from sentry.utils.decorators import classproperty
-from sentry.api.client import ApiClient
+from requests.exceptions import ConnectionError, HTTPError, Timeout
 
-from .exceptions import ApiHostError, ApiTimeoutError, ApiError, UnsupportedResponseType
+from sentry.api.client import ApiClient
+from sentry.http import build_session
+from sentry.utils import json, metrics
+from sentry.utils.decorators import classproperty
+from sentry.utils.hashlib import md5_text
+
+from .exceptions import ApiError, ApiHostError, ApiTimeoutError, UnsupportedResponseType
 
 
 class BaseApiResponse:
@@ -50,7 +50,7 @@ class BaseApiResponse:
             return XmlApiResponse(response.text, response.headers, response.status_code)
         elif response.text.startswith("<"):
             if not allow_text:
-                raise ValueError("Not a valid response type: {}".format(response.text[:128]))
+                raise ValueError(f"Not a valid response type: {response.text[:128]}")
             elif response.status_code < 200 or response.status_code >= 300:
                 raise ValueError(
                     f"Received unexpected plaintext response for code {response.status_code}"
@@ -170,6 +170,16 @@ class BaseApiClient(TrackResponseMixin):
         self.verify_ssl = verify_ssl
         self.logging_context = logging_context
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        # TODO(joshuarli): Look into reusing a SafeSession, and closing it here.
+        #                  Don't want to make the change until I completely understand
+        #                  urllib3 machinery + how we override it, possibly do this
+        #                  along with urllib3 upgrade.
+        pass
+
     def get_cache_prefix(self):
         return f"{self.integration_type}.{self.name}.client:"
 
@@ -209,7 +219,7 @@ class BaseApiClient(TrackResponseMixin):
         full_url = self.build_url(path)
 
         metrics.incr(
-            "%s.http_request" % self.datadog_prefix,
+            f"{self.datadog_prefix}.http_request",
             sample_rate=1.0,
             tags={self.integration_type: self.name},
         )

@@ -1,18 +1,23 @@
+from typing import Iterable
+
 from sentry.models import (
     Environment,
+    EnvironmentProject,
+    NotificationSetting,
     OrganizationMember,
     OrganizationMemberTeam,
     Project,
-    EnvironmentProject,
     ProjectOwnership,
     ProjectTeam,
     Release,
     ReleaseProject,
     ReleaseProjectEnvironment,
     Rule,
-    UserOption,
+    User,
 )
+from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
 from sentry.testutils import TestCase
+from sentry.types.integrations import ExternalProviders
 from sentry.utils.compat import zip
 
 
@@ -292,51 +297,123 @@ class CopyProjectSettingsTest(TestCase):
 
 
 class FilterToSubscribedUsersTest(TestCase):
-    def run_test(self, users, expected_users):
-        assert self.project.filter_to_subscribed_users(users) == expected_users
+    def run_test(self, users: Iterable[User], expected_users: Iterable[User]):
+        assert (
+            NotificationSetting.objects.filter_to_subscribed_users(self.project, users)[
+                ExternalProviders.EMAIL
+            ]
+            == expected_users
+        )
 
     def test(self):
-        assert self.project.filter_to_subscribed_users([self.user]) == [self.user]
+        self.run_test([self.user], {self.user})
 
     def test_global_enabled(self):
         user = self.create_user()
-        UserOption.objects.set_value(user, "subscribe_by_default", "1")
-        self.run_test([user], [user])
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.ALWAYS,
+            user=user,
+        )
+        self.run_test({user}, {user})
 
     def test_global_disabled(self):
         user = self.create_user()
-        UserOption.objects.set_value(user, "subscribe_by_default", "0")
-        self.run_test([user], [])
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.NEVER,
+            user=user,
+        )
+        self.run_test({user}, set())
 
     def test_project_enabled(self):
         user = self.create_user()
-        UserOption.objects.set_value(user, "subscribe_by_default", "0")
-        UserOption.objects.set_value(user, "mail:alert", 1, project=self.project)
-        self.run_test([user], [user])
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.NEVER,
+            user=user,
+        )
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.ALWAYS,
+            user=user,
+            project=self.project,
+        )
+        self.run_test({user}, {user})
 
     def test_project_disabled(self):
         user = self.create_user()
-        UserOption.objects.set_value(user, "subscribe_by_default", "1")
-        UserOption.objects.set_value(user, "mail:alert", 0, project=self.project)
-        self.run_test([user], [])
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.ALWAYS,
+            user=user,
+        )
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.NEVER,
+            user=user,
+            project=self.project,
+        )
+        self.run_test({user}, set())
 
     def test_mixed(self):
         user_global_enabled = self.create_user()
-        UserOption.objects.set_value(user_global_enabled, "subscribe_by_default", "1")
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.ALWAYS,
+            user=user_global_enabled,
+        )
+
         user_global_disabled = self.create_user()
-        UserOption.objects.set_value(user_global_disabled, "subscribe_by_default", "0")
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.NEVER,
+            user=user_global_disabled,
+        )
+
         user_project_enabled = self.create_user()
-        UserOption.objects.set_value(user_project_enabled, "subscribe_by_default", "0")
-        UserOption.objects.set_value(user_project_enabled, "mail:alert", 1, project=self.project)
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.NEVER,
+            user=user_project_enabled,
+        )
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.ALWAYS,
+            user=user_project_enabled,
+            project=self.project,
+        )
+
         user_project_disabled = self.create_user()
-        UserOption.objects.set_value(user_project_disabled, "subscribe_by_default", "1")
-        UserOption.objects.set_value(user_project_disabled, "mail:alert", 0, project=self.project)
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.ALWAYS,
+            user=user_project_disabled,
+        )
+        NotificationSetting.objects.update_settings(
+            ExternalProviders.EMAIL,
+            NotificationSettingTypes.ISSUE_ALERTS,
+            NotificationSettingOptionValues.NEVER,
+            user=user_project_disabled,
+            project=self.project,
+        )
         self.run_test(
-            [
+            {
                 user_global_enabled,
                 user_global_disabled,
                 user_project_enabled,
                 user_project_disabled,
-            ],
-            [user_global_enabled, user_project_enabled],
+            },
+            {user_global_enabled, user_project_enabled},
         )

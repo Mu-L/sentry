@@ -1,12 +1,12 @@
-import jwt
 import logging
+
 from django.views.decorators.csrf import csrf_exempt
 
 from sentry.api.base import Endpoint
-from sentry.shared_integrations.exceptions import ApiError
 from sentry.integrations.jira.webhooks import handle_assignee_change, handle_status_change
 from sentry.models import Integration
-
+from sentry.shared_integrations.exceptions import ApiError
+from sentry.utils import jwt
 
 logger = logging.getLogger("sentry.integrations.jira_server.webhooks")
 
@@ -21,7 +21,7 @@ def get_integration_from_token(token):
         raise ValueError("Token was empty")
 
     try:
-        unvalidated = jwt.decode(token, verify=False)
+        unvalidated = jwt.peek_claims(token)
     except jwt.DecodeError:
         raise ValueError("Could not decode JWT token")
     if "id" not in unvalidated:

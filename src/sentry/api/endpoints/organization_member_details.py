@@ -8,9 +8,9 @@ from sentry.api.bases.organization import OrganizationEndpoint, OrganizationPerm
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.serializers import (
     DetailedUserSerializer,
-    serialize,
-    RoleSerializer,
     OrganizationMemberWithTeamsSerializer,
+    RoleSerializer,
+    serialize,
 )
 from sentry.api.serializers.rest_framework import ListField
 from sentry.auth.superuser import is_active_superuser
@@ -25,7 +25,6 @@ from sentry.models import (
     TeamStatus,
 )
 from sentry.utils import metrics, ratelimits
-
 
 ERR_NO_AUTH = "You cannot remove this member with an unauthenticated API request."
 ERR_INSUFFICIENT_ROLE = "You cannot remove a member who has more access than you."
@@ -94,7 +93,8 @@ class OrganizationMemberDetailsEndpoint(OrganizationEndpoint):
                 raise OrganizationMember.DoesNotExist()
         return queryset.select_related("user").get()
 
-    def _is_only_owner(self, member):
+    @staticmethod
+    def is_only_owner(member):
         if member.role != roles.get_top_dog().id:
             return False
 
@@ -116,7 +116,7 @@ class OrganizationMemberDetailsEndpoint(OrganizationEndpoint):
             context["invite_link"] = member.get_invite_link()
             context["user"] = serialize(member.user, request.user, DetailedUserSerializer())
 
-        context["isOnlyOwner"] = self._is_only_owner(member)
+        context["isOnlyOwner"] = self.is_only_owner(member)
         context["roles"] = serialize(
             roles.get_all(), serializer=RoleSerializer(), allowed_roles=allowed_roles
         )
@@ -250,7 +250,7 @@ class OrganizationMemberDetailsEndpoint(OrganizationEndpoint):
         except OrganizationMember.DoesNotExist:
             raise ResourceDoesNotExist
 
-        if request.user.is_authenticated() and not is_active_superuser(request):
+        if request.user.is_authenticated and not is_active_superuser(request):
             try:
                 acting_member = OrganizationMember.objects.get(
                     organization=organization, user=request.user
@@ -268,7 +268,7 @@ class OrganizationMemberDetailsEndpoint(OrganizationEndpoint):
         elif not request.access.has_scope("member:admin"):
             return Response({"detail": ERR_INSUFFICIENT_SCOPE}, status=400)
 
-        if self._is_only_owner(om):
+        if self.is_only_owner(om):
             return Response({"detail": ERR_ONLY_OWNER}, status=403)
 
         audit_data = om.get_audit_log_data()

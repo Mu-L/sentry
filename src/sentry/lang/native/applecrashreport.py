@@ -1,12 +1,12 @@
 import posixpath
 
+from symbolic import parse_addr
+
 from sentry.constants import NATIVE_UNKNOWN_STRING
 from sentry.interfaces.exception import upgrade_legacy_mechanism
 from sentry.lang.native.utils import image_name
-from sentry.utils.safe import get_path
-
-from symbolic import parse_addr
 from sentry.utils.compat import map
+from sentry.utils.safe import get_path
 
 REPORT_VERSION = "104"
 
@@ -157,7 +157,7 @@ class AppleCrashReport:
         return 0
 
     def get_binary_images_apple_string(self):
-        # We dont need binary images on symbolicated crashreport
+        # We don't need binary images on symbolicated crashreport
         if self.symbolicated or self.debug_images is None:
             return ""
         binary_images = map(

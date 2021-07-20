@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import EventView from 'app/utils/discover/eventView';
@@ -15,6 +13,12 @@ const defaultData = {
   'measurements.fcp': 1234,
   percentile_measurements_fcp_0_5: 1234,
   'error.handled': [null],
+  'error.type': [
+    'ServerException',
+    'ClickhouseError',
+    'QueryException',
+    'QueryException',
+  ],
 };
 
 function makeWrapper(eventView, handleCellAction, columnIndex = 0, data = defaultData) {
@@ -44,6 +48,7 @@ describe('Discover -> CellAction', function () {
         'measurements.fcp',
         'percentile(measurements.fcp, 0.5)',
         'error.handled',
+        'error.type',
       ],
       widths: ['437', '647', '416', '905'],
       sort: ['title'],
@@ -184,6 +189,23 @@ describe('Discover -> CellAction', function () {
       expect(handleCellAction).toHaveBeenCalledWith('add', 1);
     });
 
+    it('error.type with array values adds condition', function () {
+      wrapper = makeWrapper(view, handleCellAction, 8, defaultData);
+
+      // Show button and menu.
+      wrapper.find('Container').simulate('mouseEnter');
+      wrapper.find('MenuButton').simulate('click');
+
+      wrapper.find('button[data-test-id="add-to-filter"]').simulate('click');
+
+      expect(handleCellAction).toHaveBeenCalledWith('add', [
+        'ServerException',
+        'ClickhouseError',
+        'QueryException',
+        'QueryException',
+      ]);
+    });
+
     it('error.handled with 0 adds condition', function () {
       wrapper = makeWrapper(view, handleCellAction, 7, {
         ...defaultData,
@@ -196,7 +218,7 @@ describe('Discover -> CellAction', function () {
 
       wrapper.find('button[data-test-id="add-to-filter"]').simulate('click');
 
-      expect(handleCellAction).toHaveBeenCalledWith('add', 0);
+      expect(handleCellAction).toHaveBeenCalledWith('add', [0]);
     });
 
     it('show appropriate actions for string cells', function () {
@@ -327,73 +349,119 @@ describe('Discover -> CellAction', function () {
 });
 
 describe('updateQuery()', function () {
+  const columnA = {
+    key: 'a',
+    name: 'a',
+    type: 'number',
+    isSortable: false,
+    column: {
+      kind: 'field',
+      field: 'a',
+    },
+    width: -1,
+  };
+
+  const columnB = {
+    key: 'b',
+    name: 'b',
+    type: 'number',
+    isSortable: false,
+    column: {
+      kind: 'field',
+      field: 'b',
+    },
+    width: -1,
+  };
+
   it('modifies the query with has/!has', function () {
-    const results = new QueryResults([]);
-    updateQuery(results, Actions.ADD, 'a', null);
+    let results = new QueryResults([]);
+    updateQuery(results, Actions.ADD, columnA, null);
     expect(results.formatString()).toEqual('!has:a');
-    updateQuery(results, Actions.EXCLUDE, 'a', null);
+    updateQuery(results, Actions.EXCLUDE, columnA, null);
     expect(results.formatString()).toEqual('has:a');
-    updateQuery(results, Actions.ADD, 'a', null);
+    updateQuery(results, Actions.ADD, columnA, null);
+    expect(results.formatString()).toEqual('!has:a');
+
+    results = new QueryResults([]);
+    updateQuery(results, Actions.ADD, columnA, [null]);
     expect(results.formatString()).toEqual('!has:a');
   });
 
   it('modifies the query with additions', function () {
     const results = new QueryResults([]);
-    updateQuery(results, Actions.ADD, 'a', '1');
+    updateQuery(results, Actions.ADD, columnA, '1');
     expect(results.formatString()).toEqual('a:1');
-    updateQuery(results, Actions.ADD, 'b', '1');
+    updateQuery(results, Actions.ADD, columnB, '1');
     expect(results.formatString()).toEqual('a:1 b:1');
-    updateQuery(results, Actions.ADD, 'a', '2');
+    updateQuery(results, Actions.ADD, columnA, '2');
     expect(results.formatString()).toEqual('b:1 a:2');
+    updateQuery(results, Actions.ADD, columnA, ['1', '2', '3']);
+    expect(results.formatString()).toEqual('b:1 a:2 a:1 a:3');
   });
 
   it('modifies the query with exclusions', function () {
     const results = new QueryResults([]);
-    updateQuery(results, Actions.EXCLUDE, 'a', '1');
+    updateQuery(results, Actions.EXCLUDE, columnA, '1');
     expect(results.formatString()).toEqual('!a:1');
-    updateQuery(results, Actions.EXCLUDE, 'b', '1');
+    updateQuery(results, Actions.EXCLUDE, columnB, '1');
     expect(results.formatString()).toEqual('!a:1 !b:1');
-    updateQuery(results, Actions.EXCLUDE, 'a', '2');
-    expect(results.formatString()).toEqual('!a:1 !b:1 !a:2');
+    updateQuery(results, Actions.EXCLUDE, columnA, '2');
+    expect(results.formatString()).toEqual('!b:1 !a:1 !a:2');
+    updateQuery(results, Actions.EXCLUDE, columnA, ['1', '2', '3']);
+    expect(results.formatString()).toEqual('!b:1 !a:1 !a:2 !a:3');
   });
 
   it('modifies the query with a mix of additions and exclusions', function () {
     const results = new QueryResults([]);
-    updateQuery(results, Actions.ADD, 'a', '1');
+    updateQuery(results, Actions.ADD, columnA, '1');
     expect(results.formatString()).toEqual('a:1');
-    updateQuery(results, Actions.ADD, 'b', '2');
+    updateQuery(results, Actions.ADD, columnB, '2');
     expect(results.formatString()).toEqual('a:1 b:2');
-    updateQuery(results, Actions.EXCLUDE, 'a', '3');
+    updateQuery(results, Actions.EXCLUDE, columnA, '3');
     expect(results.formatString()).toEqual('b:2 !a:3');
-    updateQuery(results, Actions.EXCLUDE, 'b', '4');
+    updateQuery(results, Actions.EXCLUDE, columnB, '4');
     expect(results.formatString()).toEqual('!a:3 !b:4');
-    updateQuery(results, Actions.ADD, 'a', '5');
+    updateQuery(results, Actions.ADD, columnA, '5');
     expect(results.formatString()).toEqual('!b:4 a:5');
-    updateQuery(results, Actions.ADD, 'b', '6');
+    updateQuery(results, Actions.ADD, columnB, '6');
     expect(results.formatString()).toEqual('a:5 b:6');
   });
 
   it('modifies the query with greater/less than', function () {
     const results = new QueryResults([]);
-    updateQuery(results, Actions.SHOW_GREATER_THAN, 'a', 1);
+    updateQuery(results, Actions.SHOW_GREATER_THAN, columnA, 1);
     expect(results.formatString()).toEqual('a:>1');
-    updateQuery(results, Actions.SHOW_GREATER_THAN, 'a', 2);
+    updateQuery(results, Actions.SHOW_GREATER_THAN, columnA, 2);
     expect(results.formatString()).toEqual('a:>2');
-    updateQuery(results, Actions.SHOW_LESS_THAN, 'a', 3);
+    updateQuery(results, Actions.SHOW_LESS_THAN, columnA, 3);
     expect(results.formatString()).toEqual('a:<3');
-    updateQuery(results, Actions.SHOW_LESS_THAN, 'a', 4);
+    updateQuery(results, Actions.SHOW_LESS_THAN, columnA, 4);
     expect(results.formatString()).toEqual('a:<4');
+  });
+
+  it('modifies the query with greater/less than on duration fields', function () {
+    const columnADuration = {...columnA, type: 'duration'};
+
+    const results = new QueryResults([]);
+    updateQuery(results, Actions.SHOW_GREATER_THAN, columnADuration, 1);
+    expect(results.formatString()).toEqual('a:>1.00ms');
+    updateQuery(results, Actions.SHOW_GREATER_THAN, columnADuration, 2);
+    expect(results.formatString()).toEqual('a:>2.00ms');
+    updateQuery(results, Actions.SHOW_LESS_THAN, columnADuration, 3);
+    expect(results.formatString()).toEqual('a:<3.00ms');
+    updateQuery(results, Actions.SHOW_LESS_THAN, columnADuration, 4.1234);
+    expect(results.formatString()).toEqual('a:<4.12ms');
   });
 
   it('does not error for special actions', function () {
     const results = new QueryResults([]);
-    updateQuery(results, Actions.TRANSACTION, '', '');
-    updateQuery(results, Actions.RELEASE, '', '');
-    updateQuery(results, Actions.DRILLDOWN, '', '');
+    updateQuery(results, Actions.TRANSACTION, columnA, '');
+    updateQuery(results, Actions.RELEASE, columnA, '');
+    updateQuery(results, Actions.DRILLDOWN, columnA, '');
   });
 
   it('errors for unknown actions', function () {
     const results = new QueryResults([]);
-    expect(() => updateQuery(results, 'unknown', '', '')).toThrow();
+    expect(() => updateQuery(results, 'unknown', columnA, '')).toThrow();
   });
 });

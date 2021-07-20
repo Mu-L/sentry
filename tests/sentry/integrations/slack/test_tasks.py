@@ -1,21 +1,18 @@
-import responses
-
-from exam import fixture
 from uuid import uuid4
 
+import responses
+from exam import fixture
+
+from sentry.incidents.models import AlertRule, AlertRuleTriggerAction
+from sentry.integrations.slack.tasks import (
+    RedisRuleStatus,
+    find_channel_id_for_alert_rule,
+    find_channel_id_for_rule,
+)
+from sentry.models import Integration, Rule
+from sentry.testutils.cases import TestCase
 from sentry.utils import json
 from sentry.utils.compat.mock import patch
-from sentry.models import Integration, Rule
-from sentry.incidents.models import (
-    AlertRule,
-    AlertRuleTriggerAction,
-)
-from sentry.integrations.slack.tasks import (
-    find_channel_id_for_rule,
-    find_channel_id_for_alert_rule,
-    RedisRuleStatus,
-)
-from sentry.testutils.cases import TestCase
 
 
 class SlackTasksTest(TestCase):
@@ -45,7 +42,7 @@ class SlackTasksTest(TestCase):
         )
 
     @fixture
-    def metic_alert_data(self):
+    def metric_alert_data(self):
         return {
             "aggregate": "count()",
             "query": "",
@@ -67,6 +64,7 @@ class SlackTasksTest(TestCase):
                 },
             ],
             "projects": [self.project1.slug],
+            "owner": self.user.id,
             "name": "New Rule",
             "organization_id": self.org.id,
         }
@@ -207,7 +205,7 @@ class SlackTasksTest(TestCase):
         return_value=("#", "chan-id", False),
     )
     def test_task_new_alert_rule(self, mock_get_channel_id, mock_set_value):
-        alert_rule_data = self.metic_alert_data
+        alert_rule_data = self.metric_alert_data
 
         data = {
             "data": alert_rule_data,
@@ -234,7 +232,7 @@ class SlackTasksTest(TestCase):
         return_value=("#", None, False),
     )
     def test_task_failed_id_lookup(self, mock_get_channel_id, mock_set_value):
-        alert_rule_data = self.metic_alert_data
+        alert_rule_data = self.metric_alert_data
 
         data = {
             "data": alert_rule_data,
@@ -256,7 +254,7 @@ class SlackTasksTest(TestCase):
         return_value=("#", None, True),
     )
     def test_task_timeout_id_lookup(self, mock_get_channel_id, mock_set_value):
-        alert_rule_data = self.metic_alert_data
+        alert_rule_data = self.metric_alert_data
 
         data = {
             "data": alert_rule_data,
@@ -278,7 +276,7 @@ class SlackTasksTest(TestCase):
         return_value=("#", "chan-id", False),
     )
     def test_task_existing_metric_alert(self, mock_get_channel_id, mock_set_value):
-        alert_rule_data = self.metic_alert_data
+        alert_rule_data = self.metric_alert_data
         alert_rule = self.create_alert_rule(
             organization=self.org, projects=[self.project1], name="New Rule", user=self.user
         )

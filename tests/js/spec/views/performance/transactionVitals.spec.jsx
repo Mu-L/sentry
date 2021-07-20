@@ -1,12 +1,14 @@
-import React from 'react';
 import {browserHistory} from 'react-router';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 
 import ProjectsStore from 'app/stores/projectsStore';
-import TransactionVitals from 'app/views/performance/transactionVitals';
-import {VITAL_GROUPS, ZOOM_KEYS} from 'app/views/performance/transactionVitals/constants';
+import TransactionVitals from 'app/views/performance/transactionSummary/transactionVitals';
+import {
+  VITAL_GROUPS,
+  ZOOM_KEYS,
+} from 'app/views/performance/transactionSummary/transactionVitals/constants';
 
 function initialize({project, features, transaction, query} = {}) {
   features = features || ['performance-view'];
@@ -39,31 +41,26 @@ const vitals = [
   {
     slug: 'fp',
     heading: 'First Paint (FP)',
-    state: 'Fail',
     baseline: '4.57s',
   },
   {
     slug: 'fcp',
     heading: 'First Contentful Paint (FCP)',
-    state: 'Pass',
     baseline: '1.46s',
   },
   {
     slug: 'lcp',
     heading: 'Largest Contentful Paint (LCP)',
-    state: 'Pass',
     baseline: '1.34s',
   },
   {
     slug: 'fid',
     heading: 'First Input Delay (FID)',
-    state: 'Fail',
     baseline: '987.00ms',
   },
   {
     slug: 'cls',
     heading: 'Cumulative Layout Shift (CLS)',
-    state: 'Pass',
     baseline: '0.02',
   },
 ];
@@ -186,7 +183,6 @@ describe('Performance > Web Vitals', function () {
       expect(vitalCard.find('CardSectionHeading').text()).toEqual(
         expect.stringContaining(vitals[i].heading)
       );
-      expect(vitalCard.find('Tag').text()).toEqual(vitals[i].state);
       expect(vitalCard.find('StatNumber').text()).toEqual(vitals[i].baseline);
     });
     expect(vitalCards.find('BarChart')).toHaveLength(5);

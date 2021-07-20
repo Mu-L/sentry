@@ -1,11 +1,12 @@
-import React from 'react';
+import {act} from 'react-dom/test-utils';
 import {browserHistory} from 'react-router';
 
+import {createListeners} from 'sentry-test/createListeners';
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 import {mountGlobalModal} from 'sentry-test/modal';
 
-import DashboardDetail from 'app/views/dashboardsV2/detail';
+import ViewEditDashboard from 'app/views/dashboardsV2/view';
 
 describe('Dashboards > Detail', function () {
   const organization = TestStubs.Organization({
@@ -16,7 +17,6 @@ describe('Dashboards > Detail', function () {
   describe('prebuilt dashboards', function () {
     let wrapper;
     let initialData;
-    const route = {};
 
     beforeEach(function () {
       initialData = initializeOrg({organization});
@@ -52,11 +52,11 @@ describe('Dashboards > Detail', function () {
         method: 'DELETE',
       });
       wrapper = mountWithTheme(
-        <DashboardDetail
+        <ViewEditDashboard
           organization={initialData.organization}
           params={{orgId: 'org-slug', dashboardId: 'default-overview'}}
           router={initialData.router}
-          route={route}
+          location={location}
         />,
         initialData.routerContext
       );
@@ -81,13 +81,15 @@ describe('Dashboards > Detail', function () {
     });
 
     it('can rename and save', async function () {
+      const fireEvent = createListeners('window');
+
       const updateMock = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/dashboards/default-overview/',
         method: 'PUT',
         body: TestStubs.Dashboard([], {id: '8', title: 'Updated prebuilt'}),
       });
       wrapper = mountWithTheme(
-        <DashboardDetail
+        <ViewEditDashboard
           organization={initialData.organization}
           params={{orgId: 'org-slug', dashboardId: 'default-overview'}}
           router={initialData.router}
@@ -102,8 +104,16 @@ describe('Dashboards > Detail', function () {
       wrapper.find('Controls Button[data-test-id="dashboard-edit"]').simulate('click');
 
       // Rename
-      wrapper.find('DashboardTitle Input').simulate('blur', {
+      const dashboardTitle = wrapper.find('DashboardTitle Label');
+      dashboardTitle.simulate('click');
+
+      wrapper.find('StyledInput').simulate('change', {
         target: {innerText: 'Updated prebuilt', value: 'Updated prebuilt'},
+      });
+
+      act(() => {
+        // Press enter
+        fireEvent.keyDown('Enter');
       });
 
       wrapper.find('Controls Button[data-test-id="dashboard-commit"]').simulate('click');
@@ -118,18 +128,22 @@ describe('Dashboards > Detail', function () {
       // Should redirect to the new dashboard.
       expect(browserHistory.replace).toHaveBeenCalledWith(
         expect.objectContaining({
-          pathname: '/organizations/org-slug/dashboards/8/',
+          pathname: '/organizations/org-slug/dashboard/8/',
         })
       );
     });
 
     it('disables buttons based on features', async function () {
+      initialData = initializeOrg({
+        organization: TestStubs.Organization({
+          features: ['global-views', 'dashboards-basic', 'discover-query'],
+          projects: [TestStubs.Project()],
+        }),
+      });
+
       wrapper = mountWithTheme(
-        <DashboardDetail
-          organization={{
-            ...initialData.organization,
-            features: ['dashboards-basic', 'discover-basic'],
-          }}
+        <ViewEditDashboard
+          organization={initialData.organization}
           params={{orgId: 'org-slug', dashboardId: 'default-overview'}}
           router={initialData.router}
           location={initialData.router.location}
@@ -144,12 +158,6 @@ describe('Dashboards > Detail', function () {
         .find('Controls Button[data-test-id="dashboard-edit"]')
         .props();
       expect(editProps.disabled).toBe(true);
-
-      // Create should be disabled
-      const createProps = wrapper
-        .find('Controls Button[data-test-id="dashboard-create"]')
-        .props();
-      expect(createProps.disabled).toBe(true);
     });
   });
 
@@ -157,7 +165,6 @@ describe('Dashboards > Detail', function () {
     let wrapper;
     let initialData;
     let widgets;
-    const route = {};
 
     beforeEach(function () {
       initialData = initializeOrg({organization});
@@ -167,6 +174,7 @@ describe('Dashboards > Detail', function () {
           {
             title: 'Errors',
             interval: '1d',
+            id: '1',
           }
         ),
         TestStubs.Widget(
@@ -174,6 +182,21 @@ describe('Dashboards > Detail', function () {
           {
             title: 'Transactions',
             interval: '1d',
+            id: '2',
+          }
+        ),
+        TestStubs.Widget(
+          [
+            {
+              name: '',
+              conditions: 'event.type:transaction transaction:/api/cats',
+              fields: ['p50()'],
+            },
+          ],
+          {
+            title: 'p50 of /api/cats',
+            interval: '1d',
+            id: '3',
           }
         ),
       ];
@@ -213,11 +236,10 @@ describe('Dashboards > Detail', function () {
         method: 'PUT',
       });
       wrapper = mountWithTheme(
-        <DashboardDetail
+        <ViewEditDashboard
           organization={initialData.organization}
           params={{orgId: 'org-slug', dashboardId: '1'}}
           router={initialData.router}
-          route={route}
           location={initialData.router.location}
         />,
         initialData.routerContext
@@ -231,10 +253,16 @@ describe('Dashboards > Detail', function () {
       const card = wrapper.find('WidgetCard').first();
       card.find('StyledPanel').simulate('mouseOver');
 
-      // Remove the first widget
+      // Remove the second and third widgets
       wrapper
         .find('WidgetCard')
-        .first()
+        .at(1)
+        .find('IconClick[data-test-id="widget-delete"]')
+        .simulate('click');
+
+      wrapper
+        .find('WidgetCard')
+        .at(1)
         .find('IconClick[data-test-id="widget-delete"]')
         .simulate('click');
 
@@ -247,7 +275,7 @@ describe('Dashboards > Detail', function () {
         expect.objectContaining({
           data: expect.objectContaining({
             title: 'Custom Errors',
-            widgets: [widgets[1]],
+            widgets: [widgets[0]],
           }),
         })
       );
@@ -255,11 +283,10 @@ describe('Dashboards > Detail', function () {
 
     it('can enter edit mode for widgets', async function () {
       wrapper = mountWithTheme(
-        <DashboardDetail
+        <ViewEditDashboard
           organization={initialData.organization}
           params={{orgId: 'org-slug', dashboardId: '1'}}
           router={initialData.router}
-          route={route}
           location={initialData.router.location}
         />,
         initialData.routerContext
@@ -285,6 +312,47 @@ describe('Dashboards > Detail', function () {
       const modal = await mountGlobalModal();
 
       expect(modal.find('AddDashboardWidgetModal').props().widget).toEqual(widgets[0]);
+    });
+
+    it('hides and shows breadcrumbs based on feature', async function () {
+      const newOrg = initializeOrg({
+        organization: TestStubs.Organization({
+          features: ['global-views', 'dashboards-basic', 'discover-query'],
+          projects: [TestStubs.Project()],
+        }),
+      });
+
+      wrapper = mountWithTheme(
+        <ViewEditDashboard
+          organization={newOrg.organization}
+          params={{orgId: 'org-slug', dashboardId: '1'}}
+          router={newOrg.router}
+          location={newOrg.router.location}
+        />,
+        newOrg.routerContext
+      );
+      await tick();
+      wrapper.update();
+
+      expect(wrapper.find('Breadcrumbs').exists()).toBe(false);
+
+      wrapper = mountWithTheme(
+        <ViewEditDashboard
+          organization={initialData.organization}
+          params={{orgId: 'org-slug', dashboardId: '1'}}
+          router={initialData.router}
+          location={initialData.router.location}
+        />,
+        initialData.routerContext
+      );
+      await tick();
+      wrapper.update();
+
+      const breadcrumbs = wrapper.find('Breadcrumbs');
+
+      expect(breadcrumbs.exists()).toBe(true);
+      expect(breadcrumbs.find('BreadcrumbLink').find('a').text()).toEqual('Dashboards');
+      expect(breadcrumbs.find('BreadcrumbItem').last().text()).toEqual('Custom Errors');
     });
   });
 });
