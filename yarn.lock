@@ -2120,16 +2120,24 @@
     "@babel/runtime" "^7.6.2"
     "@react-types/shared" "^3.14.1"
 
-"@react-stately/list@^3.5.3":
-  version "3.5.3"
-  resolved "https://registry.yarnpkg.com/@react-stately/list/-/list-3.5.3.tgz#4a9473194f2a9465ec8bfe6b201036b90d0d52bf"
-  integrity sha512-qO8RhtXKdXKWqoJiwB+iw18SwY4NlMoDGX08wnesIz10blWyBotx81uR6C53Z7pAlbm4jUSO8KlJ9ACvhy/6Mg==
+"@react-stately/collections@^3.5.0":
+  version "3.5.0"
+  resolved "https://registry.yarnpkg.com/@react-stately/collections/-/collections-3.5.0.tgz#01606d4aa12364cc4296cc036e77690e48ec818c"
+  integrity sha512-3BAMRjJqrka0IGvyK4m3WslqCeiEfQGx7YsXEIgIgMJoLpk6Fi1Eh4CI8coBnl/wcVLiIRMCIvxubwFRWTgzdg==
   dependencies:
     "@babel/runtime" "^7.6.2"
-    "@react-stately/collections" "^3.4.3"
-    "@react-stately/selection" "^3.10.3"
+    "@react-types/shared" "^3.16.0"
+
+"@react-stately/list@^3.5.3", "@react-stately/list@^3.6.0":
+  version "3.6.0"
+  resolved "https://registry.yarnpkg.com/@react-stately/list/-/list-3.6.0.tgz#b5e04d59b8d53974c199f19712eb02c7a138896e"
+  integrity sha512-sah2JAiqlSZhg1tQBSv9866LeAJISmosOFsOsVZPfyfAewuCksA+8OHrFtbKmMyzU5MbrmpbR8v2zZH7c1CLdg==
+  dependencies:
+    "@babel/runtime" "^7.6.2"
+    "@react-stately/collections" "^3.5.0"
+    "@react-stately/selection" "^3.11.1"
     "@react-stately/utils" "^3.5.1"
-    "@react-types/shared" "^3.14.1"
+    "@react-types/shared" "^3.16.0"
 
 "@react-stately/menu@^3.2.3":
   version "3.2.3"
@@ -2161,15 +2169,25 @@
     "@react-stately/utils" "^3.5.1"
     "@react-types/shared" "^3.14.1"
 
-"@react-stately/tabs@^3.2.1":
-  version "3.2.1"
-  resolved "https://registry.yarnpkg.com/@react-stately/tabs/-/tabs-3.2.1.tgz#bc32bd13e1816d536000848e133d6ebc44c75bc7"
-  integrity sha512-3Z5MrJrx7Ozkp5kjhYgDs8p0kNmLocsHgq1IWgBRTRdTyQB01ixEuhR1g6A+BHFLojyDB6EKBX8TrbZPsnHRdQ==
+"@react-stately/selection@^3.11.1":
+  version "3.11.1"
+  resolved "https://registry.yarnpkg.com/@react-stately/selection/-/selection-3.11.1.tgz#580145bade9aebb8395ebc2edabed422d84fde0a"
+  integrity sha512-UHB6/eH5NJ+Q70G+pmnxohHfR3bh0szT+lOlWPj7Mh76WPu9bu07IHKLEob6PSzyJ81h7+Ysk3hdIgS3TewGog==
   dependencies:
     "@babel/runtime" "^7.6.2"
-    "@react-stately/list" "^3.5.3"
+    "@react-stately/collections" "^3.5.0"
     "@react-stately/utils" "^3.5.1"
-    "@react-types/tabs" "^3.1.3"
+    "@react-types/shared" "^3.16.0"
+
+"@react-stately/tabs@^3.2.1", "@react-stately/tabs@^3.2.3":
+  version "3.2.3"
+  resolved "https://registry.yarnpkg.com/@react-stately/tabs/-/tabs-3.2.3.tgz#39b7e7bf7dfe544868be4c1593578587cff0d5a9"
+  integrity sha512-23GX5iBX1IPY1sD4nq8sTgCfaCt+P2nORYnBWA01+iZoUX/g3BG3+3S2SVL1J7esmcapGnXNapUa2zEbf3aFRg==
+  dependencies:
+    "@babel/runtime" "^7.6.2"
+    "@react-stately/list" "^3.6.0"
+    "@react-stately/utils" "^3.5.1"
+    "@react-types/tabs" "^3.1.5"
 
 "@react-stately/toggle@^3.2.3":
   version "3.2.3"
@@ -2233,12 +2251,17 @@
   resolved "https://registry.yarnpkg.com/@react-types/shared/-/shared-3.14.1.tgz#8fe25f729426e8043054e442eb5392364200e028"
   integrity sha512-yPPgVRWWanXqbdxFTgJmVwx0JlcnEK3dqkKDIbVk6mxAHvEESI9+oDnHvO8IMHqF+GbrTCzVtAs0zwhYI/uHJA==
 
-"@react-types/tabs@^3.1.3":
-  version "3.1.3"
-  resolved "https://registry.yarnpkg.com/@react-types/tabs/-/tabs-3.1.3.tgz#a9de35aa9a97997b5b2d3e94ec91e46920ded90d"
-  integrity sha512-RfHVSsbQiiIaJxf1qBdTt+mWj1GGC7AK/sXAQGhf3p3bi8fXBcXv2hZyPQF8uWZfb8sANtEXP8V3Xdg5SlWFGA==
+"@react-types/shared@^3.16.0":
+  version "3.16.0"
+  resolved "https://registry.yarnpkg.com/@react-types/shared/-/shared-3.16.0.tgz#cab7bf0376969d1773480ecb2d6da5aa91391db5"
+  integrity sha512-IQgU4oAEvMwylEvaTsr2XB1G/mAoMe1JFYLD6G78v++oAR9l8o9MQxZ0YSeANDkqTamb2gKezGoT1RxvSKjVxw==
+
+"@react-types/tabs@^3.1.3", "@react-types/tabs@^3.1.5":
+  version "3.1.5"
+  resolved "https://registry.yarnpkg.com/@react-types/tabs/-/tabs-3.1.5.tgz#8676dd16e0dc4be2d4d1cc33bb89cc679ef93abe"
+  integrity sha512-YgWY8IajCDBZmBzR3eii0aW6+SjcAT/dmqDNmfIuVVnDN7sHQ3PFa0nbmByvb0SfjOkJYumt8TJwFUCugohS8A==
   dependencies:
-    "@react-types/shared" "^3.14.1"
+    "@react-types/shared" "^3.16.0"
 
 "@sentry-internal/global-search@^0.3.0":
   version "0.3.0"
